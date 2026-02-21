@@ -14,6 +14,7 @@ from ..calibration_results import CalibrationResults
 from ..metrics import rmse
 from .common import SamplerContext
 from . import rejection
+from . import smc
 from . import top_fraction
 
 
@@ -147,161 +148,18 @@ class ABCSampler:
         verbose: bool = True,
     ) -> CalibrationResults:
         """Run ABC-SMC calibration."""
-        # Initialize perturbations if not provided
-        if perturbations is None:
-            perturbations = {
-                param: (
-                    DefaultPerturbationContinuous(param)
-                    if param in self.continuous_params
-                    else DefaultPerturbationDiscrete(param, self.priors[param])
-                )
-                for param in self.param_names
-            }
-
-        if verbose:
-            print(
-                f"Starting ABC-SMC with {num_particles} particles and {num_generations} generations"
-            )
-
-        # Run generations
-        start_time = datetime.now()
-        # _initialize_particles and _run_smc_generation receive n_simulations from
-        # previous generation and return the updated (accumulated) total.
-        n_simulations = 0
-        results = None
-
-        for gen in range(num_generations):
-            start_generation_time = datetime.now()
-
-            if gen == 0:
-                epsilon = (
-                    epsilon_schedule[0]
-                    if epsilon_schedule is not None
-                    else float("inf")
-                )
-                if verbose:
-                    print(
-                        f"\nGeneration {gen + 1}/{num_generations} (epsilon: {epsilon:.6f})"
-                    )
-                # Initialize particles, weights, distances, simulations
-                new_gen = self._initialize_particles(
-                    num_particles,
-                    epsilon,
-                    start_time,
-                    max_time,
-                    total_simulations_budget,
-                    n_simulations,
-                )
-                if new_gen is None:
-                    if verbose:
-                        print("Maximum time or budget reached during generation 0")
-                    break
-                n_simulations = new_gen["n_simulations"]
-
-                # Store results for generation 0
-                results = self._create_results(
-                    "smc",
-                    pd.DataFrame(
-                        data={
-                            self.param_names[i]: new_gen["particles"][:, i]
-                            for i in range(len(self.param_names))
-                        }
-                    ),
-                    new_gen["weights"],
-                    new_gen["distances"],
-                    new_gen["simulations"],
-                )
-
-                particles = new_gen["particles"]
-                weights = new_gen["weights"]
-                distances = new_gen["distances"]
-
-            else:
-                # Compute epsilon for this generation
-                epsilon = (
-                    epsilon_schedule[gen]
-                    if epsilon_schedule is not None
-                    else np.quantile(distances, epsilon_quantile_level)
-                )
-
-                if verbose:
-                    print(
-                        f"\nGeneration {gen + 1}/{num_generations} (epsilon: {epsilon:.6f})"
-                    )
-
-                # Update perturbations
-                for perturbation in perturbations.values():
-                    perturbation.update(particles, weights, self.param_names)
-
-                # Run generation
-                new_gen = self._run_smc_generation(
-                    particles,
-                    weights,
-                    epsilon,
-                    num_particles,
-                    perturbations,
-                    start_time,
-                    max_time,
-                    total_simulations_budget,
-                    n_simulations,
-                )
-                if new_gen is None:
-                    if verbose:
-                        print(
-                            f"Maximum time or budget reached during generation {gen + 1}, keeping last complete generation"
-                        )
-                    break
-                n_simulations = new_gen["n_simulations"]
-
-                # Store results
-                results.posterior_distributions[gen] = pd.DataFrame(
-                    data={
-                        self.param_names[i]: new_gen["particles"][:, i]
-                        for i in range(len(self.param_names))
-                    }
-                )
-                results.distances[gen] = new_gen["distances"]
-                results.weights[gen] = new_gen["weights"]
-                results.selected_trajectories[gen] = new_gen["simulations"]
-
-                # Update current generation
-                particles = new_gen["particles"]
-                weights = new_gen["weights"]
-                distances = new_gen["distances"]
-
-            if verbose:
-                # Print generation information
-                end_generation_time = datetime.now()
-                elapsed_time = end_generation_time - start_generation_time
-                formatted_time = f"{elapsed_time.seconds // 3600:02}:{(elapsed_time.seconds % 3600) // 60:02}:{elapsed_time.seconds % 60:02}"
-                acceptance_rate = (
-                    len(new_gen["particles"]) / new_gen["n_simulations"] * 100
-                )
-                print(
-                    f"\tAccepted {len(new_gen['particles'])}/{new_gen['n_simulations']} (acceptance rate: {acceptance_rate:.2f}%)"
-                )
-                print(f"\tElapsed time: {formatted_time}")
-
-            # Check stopping conditions between generations
-            if self._check_stopping_conditions(
-                epsilon,
-                minimum_epsilon,
-                start_time,
-                max_time,
-                n_simulations,
-                total_simulations_budget,
-            ):
-                break
-
-        # If generation 0 was interrupted before completing, return empty results
-        if results is None:
-            results = CalibrationResults(
-                calibration_strategy="smc",
-                observed_data=self.observed_data,
-                priors=self.priors,
-            )
-
-        return results
+        return smc.run(
+            self._ctx,
+            num_particles=num_particles,
+            num_generations=num_generations,
+            epsilon_schedule=epsilon_schedule,
+            epsilon_quantile_level=epsilon_quantile_level,
+            minimum_epsilon=minimum_epsilon,
+            max_time=max_time,
+            total_simulations_budget=total_simulations_budget,
+            perturbations=perturbations,
+            verbose=verbose,
+        )
 
     def run_rejection(
         self,

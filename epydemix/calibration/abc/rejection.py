@@ -46,8 +46,7 @@ def run(
         distance = ctx.distance_function(ctx.observed_data, simulation)
         n_simulations += 1
 
-        # Match intended acceptance threshold semantics.
-        if distance <= epsilon:
+        if distance < epsilon:
             simulations.append(simulation)
             distances.append(distance)
             for i, param_name in enumerate(ctx.param_names):
