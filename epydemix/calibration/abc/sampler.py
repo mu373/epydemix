@@ -14,6 +14,7 @@ from ..calibration_results import CalibrationResults
 from ..metrics import rmse
 from .common import SamplerContext
 from . import rejection
+from . import top_fraction
 
 
 class ABCSampler:
@@ -326,47 +327,11 @@ class ABCSampler:
         self, top_fraction: float = 0.05, Nsim: int = 100, verbose: bool = True
     ) -> CalibrationResults:
         """Run ABC top fraction selection."""
-        simulations, distances = [], []
-        sampled_params = {p: [] for p in self.param_names}
-
-        if verbose:
-            print(
-                f"Starting ABC top fraction selection with {Nsim} simulations and top {top_fraction * 100:.1f}% selected"
-            )
-
-        for n in range(Nsim):
-            params = self._sample_parameters()
-            simulation = self._run_simulation(params)
-            distance = self.distance_function(self.observed_data, simulation)
-
-            simulations.append(simulation)
-            distances.append(distance)
-            for i, p in enumerate(self.param_names):
-                sampled_params[p].append(params[i])
-
-            # Print progress every 10% if verbose
-            if verbose and (n + 1) % max(1, Nsim // 10) == 0:
-                print(
-                    f"\tProgress: {n + 1}/{Nsim} simulations completed ({(n + 1) / Nsim * 100:.1f}%)"
-                )
-
-        # Select top fraction
-        threshold = np.quantile(distances, top_fraction)
-        mask = np.array(distances) <= threshold
-        n_selected = sum(mask)
-
-        if verbose:
-            print(
-                f"\tSelected {n_selected} particles (top {top_fraction * 100:.1f}%) "
-                f"with distance threshold {threshold:.6f}"
-            )
-
-        return self._create_results(
-            "top_fraction",
-            pd.DataFrame(sampled_params)[mask],
-            np.ones(sum(mask)) / sum(mask),
-            np.array(distances)[mask],
-            np.array(simulations)[mask],
+        return top_fraction.run(
+            self._ctx,
+            top_fraction=top_fraction,
+            Nsim=Nsim,
+            verbose=verbose,
         )
 
     def _run_simulation(self, params: List[float]) -> Dict[str, Any]:
