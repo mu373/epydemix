@@ -12,6 +12,7 @@ from ...utils.abc_smc_utils import (
 )
 from ..calibration_results import CalibrationResults
 from ..metrics import rmse
+from .common import SamplerContext
 
 
 class ABCSampler:
@@ -43,6 +44,16 @@ class ABCSampler:
         self.discrete_params = [
             name for name in self.param_names if name not in self.continuous_params
         ]
+        self._ctx = SamplerContext(
+            simulation_function=self.simulation_function,
+            priors=self.priors,
+            parameters=self.parameters,
+            observed_data=self.observed_data,
+            distance_function=self.distance_function,
+            param_names=self.param_names,
+            continuous_params=self.continuous_params,
+            discrete_params=self.discrete_params,
+        )
 
     def calibrate(self, strategy: str = "smc", **kwargs) -> CalibrationResults:
         """Run calibration using the specified strategy.
