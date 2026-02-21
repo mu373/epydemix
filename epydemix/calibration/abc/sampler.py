@@ -5,13 +5,13 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from ..utils.abc_smc_utils import (
+from ...utils.abc_smc_utils import (
     DefaultPerturbationContinuous,
     DefaultPerturbationDiscrete,
     sample_prior,
 )
-from .calibration_results import CalibrationResults
-from .metrics import rmse
+from ..calibration_results import CalibrationResults
+from ..metrics import rmse
 
 
 class ABCSampler:
