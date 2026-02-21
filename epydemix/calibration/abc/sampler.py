@@ -13,6 +13,7 @@ from ...utils.abc_smc_utils import (
 from ..calibration_results import CalibrationResults
 from ..metrics import rmse
 from .common import SamplerContext
+from . import rejection
 
 
 class ABCSampler:
@@ -311,67 +312,14 @@ class ABCSampler:
         progress_update_interval: int = 1000,
     ) -> CalibrationResults:
         """Run ABC rejection sampling."""
-        simulations, distances = [], []
-        sampled_params = {p: [] for p in self.param_names}
-
-        start_time = datetime.now()
-        n_simulations = 0
-        last_print = 0  # For tracking progress updates
-
-        if verbose:
-            print(
-                f"Starting ABC rejection sampling with {num_particles} particles and epsilon threshold {epsilon}"
-            )
-
-        while len(distances) < num_particles:
-            # Check stopping conditions
-            if self._check_stopping_conditions(
-                None,
-                None,
-                start_time,
-                max_time,
-                n_simulations,
-                total_simulations_budget,
-            ):
-                break
-
-            # Sample and simulate
-            params = self._sample_parameters()
-            simulation = self._run_simulation(params)
-            distance = self.distance_function(self.observed_data, simulation)
-            n_simulations += 1
-
-            if distance < epsilon:
-                simulations.append(simulation)
-                distances.append(distance)
-                for i, p in enumerate(self.param_names):
-                    sampled_params[p].append(params[i])
-
-            # Print progress every progress_update_interval simulations if verbose
-            if (
-                verbose
-                and n_simulations % progress_update_interval == 0
-                and n_simulations != last_print
-            ):
-                last_print = n_simulations
-                acceptance_rate = len(distances) / n_simulations * 100
-                print(
-                    f"\tSimulations: {n_simulations}, Accepted: {len(distances)}, "
-                    f"Acceptance rate: {acceptance_rate:.2f}%"
-                )
-
-        if verbose:
-            print(
-                f"\tFinal: {len(distances)} particles accepted from {n_simulations} simulations "
-                f"({len(distances) / n_simulations * 100:.2f}% acceptance rate)"
-            )
-
-        return self._create_results(
-            "rejection",
-            pd.DataFrame(sampled_params),
-            np.ones(len(distances)) / len(distances),
-            np.array(distances),
-            simulations,
+        return rejection.run(
+            self._ctx,
+            epsilon=epsilon,
+            num_particles=num_particles,
+            max_time=max_time,
+            total_simulations_budget=total_simulations_budget,
+            verbose=verbose,
+            progress_update_interval=progress_update_interval,
         )
 
     def run_top_fraction(
