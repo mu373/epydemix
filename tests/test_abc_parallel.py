@@ -628,12 +628,19 @@ def test_batch_cancels_pending_work_on_failure(failure):
 
 
 def _distance_with_positional_names(observed, predicted, /):
+    """Return the threshold exactly; positional-only args reject keyword calls."""
     return 1.0
 
 
 @pytest.mark.parametrize("mode", ["sequential", "owned", "spawn"])
 @pytest.mark.parametrize("strategy", ["rejection", "smc", "top_fraction"])
 def test_distance_callback_and_upstream_boundary_rules(mode, strategy):
+    """Check positional callback invocation and equality at acceptance thresholds.
+
+    Every candidate has distance 1.0. Rejection and later SMC generations
+    exclude equality; the initial SMC generation includes it. Top-fraction
+    selection keeps all candidates tied at its quantile threshold.
+    """
     sampler = ABCSampler(
         _mock_simulate,
         {"beta": stats.uniform(0.1, 0.5)},
@@ -642,6 +649,8 @@ def test_distance_callback_and_upstream_boundary_rules(mode, strategy):
         distance_function=_distance_with_positional_names,
         rng=43,
     )
+    # The budget exceeds 3 so SMC can attempt generation 1, and bounds runs
+    # that cannot accept any further candidates.
     options = {
         "rejection": dict(num_particles=3, epsilon=1.0, total_simulations_budget=7),
         "smc": dict(
