@@ -1,6 +1,39 @@
-"""Evaluate individual calibration candidates and projection simulations."""
+"""Picklable worker functions for parallel ABC calibration.
+
+Module-level functions are required for ProcessPoolExecutor serialization
+(closures and lambdas cannot be pickled).
+"""
+
+from functools import wraps
+
+from threadpoolctl import threadpool_limits
 
 
+def _single_threaded(function):
+    """
+    Limit supported, already-loaded BLAS/OpenMP thread pools to one thread during a call.
+
+    Previous limits are restored afterward. This reduces nested native parallelism
+    and keeps thread settings consistent between sequential and parallel evaluation.
+
+    Args:
+        function (Callable): Function to wrap.
+
+    Returns:
+        Callable: Wrapped function with the same signature.
+    """
+
+    @wraps(function)
+    def run(*args, **kwargs):
+        # Apply at task entry, including caller-owned pools; restore on failure too.
+        # Match sequential numerical reductions to those in process workers.
+        with threadpool_limits(limits=1):
+            return function(*args, **kwargs)
+
+    return run
+
+
+@_single_threaded
 def evaluate_particle(
     simulation_function,
     parameters,
@@ -57,6 +90,7 @@ def evaluate_particle(
     }
 
 
+@_single_threaded
 def run_projection(simulation_function, proj_params):
     """
     Run a single projection simulation.
