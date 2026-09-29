@@ -9,6 +9,7 @@ from scipy import stats
 from epydemix.utils.abc_smc_utils import (
     DefaultPerturbationContinuous,
     DefaultPerturbationDiscrete,
+    compute_particle_weights,
     fast_normal_pdf,
     sample_prior,
 )
@@ -167,3 +168,42 @@ def test_sample_prior_respects_param_name_order():
     # Each value lands in its prior's range regardless of order.
     assert 0.1 <= forward[0] <= 0.6 and 0.05 <= forward[1] <= 0.25
     assert 0.05 <= reverse[0] <= 0.25 and 0.1 <= reverse[1] <= 0.6
+
+
+def test_particle_weights_are_uniform_for_initial_generation():
+    particles = np.array([[0.5], [1.0], [1.5]])
+    weights = compute_particle_weights(
+        particles, None, None, {"beta": stats.uniform(0, 2)}, ["beta"], None
+    )
+    np.testing.assert_array_equal(weights, np.full(3, 1 / 3))
+
+
+@pytest.mark.parametrize("param_names", [["beta", "k"], ["k", "beta"]])
+def test_particle_weights_match_mixed_prior_kernel_mixture(param_names):
+    priors = {"beta": stats.uniform(0, 2), "k": stats.bernoulli(0.25)}
+    kernels = {
+        "beta": DefaultPerturbationContinuous("beta"),
+        "k": DefaultPerturbationDiscrete("k", priors["k"], jump_probability=0.2),
+    }
+    kernels["beta"].std = 1.0
+    previous = np.array([[0.5, 0], [1.5, 1]])
+    particles = np.array([[0.5, 1], [1.5, 0]])
+    if param_names[0] == "k":
+        previous = previous[:, ::-1].copy()
+        particles = particles[:, ::-1].copy()
+    previous_weights = np.array([0.25, 0.75])
+    snapshots = [value.copy() for value in (particles, previous, previous_weights)]
+    actual = compute_particle_weights(
+        particles, previous, previous_weights, priors, param_names, kernels
+    )
+    # Two explicit proposal mixtures; the new particles have prior masses .125 and .375.
+    same, other = stats.norm.pdf(0), stats.norm.pdf(1)
+    expected = np.array(
+        [
+            0.125 / (0.25 * same * 0.2 + 0.75 * other * 0.8),
+            0.375 / (0.25 * other * 0.8 + 0.75 * same * 0.2),
+        ]
+    )
+    np.testing.assert_allclose(actual, expected / expected.sum(), rtol=1e-14)
+    for value, snapshot in zip((particles, previous, previous_weights), snapshots):
+        np.testing.assert_array_equal(value, snapshot)
