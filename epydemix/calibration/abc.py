@@ -89,7 +89,7 @@ class ABCSampler:
         - `epsilon_schedule` (`Optional[List[float]]`, default: `None`): Predefined schedule for epsilon values.
         - `epsilon_quantile_level` (`float`, default: `0.5`): Quantile level to adapt epsilon if no schedule is provided.
         - `minimum_epsilon` (`Optional[float]`, default: `None`): Minimum allowable epsilon value.
-        - `max_time` (`Optional[timedelta]`, default: `None`): Maximum allowed runtime.
+        - `max_time` (`Optional[timedelta]`, default: `None`): Time limit checked before each simulation.
         - `total_simulations_budget` (`Optional[int]`, default: `None`): Maximum number of allowed simulations.
         - `perturbations` (`Optional[Dict[str, Any]]`, default: `None`): Perturbation kernels for parameters.
         - `verbose` (`bool`, default: `True`): Whether to print progress updates.
@@ -97,7 +97,7 @@ class ABCSampler:
         #### `"rejection"` (ABC Rejection Sampling)
         - `epsilon` (`float`, default: `0.1`): Distance threshold for accepting samples.
         - `num_particles` (`int`, default: `1000`): Number of accepted samples.
-        - `max_time` (`Optional[timedelta]`, default: `None`): Maximum allowed runtime.
+        - `max_time` (`Optional[timedelta]`, default: `None`): Time limit checked before each simulation.
         - `total_simulations_budget` (`Optional[int]`, default: `None`): Maximum number of allowed simulations.
         - `verbose` (`bool`, default: `True`): Whether to print progress updates.
         - `progress_update_interval` (`int`, default: `1000`): Interval at which progress updates are printed.
@@ -151,162 +151,40 @@ class ABCSampler:
         perturbations: Optional[Dict[str, Any]] = None,
         verbose: bool = True,
     ) -> CalibrationResults:
-        """Run ABC-SMC calibration."""
-        # Initialize perturbations if not provided
-        if perturbations is None:
-            perturbations = {
-                param: (
-                    DefaultPerturbationContinuous(param)
-                    if param in self.continuous_params
-                    else DefaultPerturbationDiscrete(param, self.priors[param])
-                )
-                for param in self.param_names
-            }
+        """
+        Run ABC-SMC and retain each complete generation in memory.
 
-        if verbose:
-            print(
-                f"Starting ABC-SMC with {num_particles} particles and {num_generations} generations"
-            )
+        Args:
+            num_particles (int, optional): Number of particles per generation. Default is 1000.
+            num_generations (int, optional): Number of generations. Default is 10.
+            epsilon_schedule (List[float], optional): Epsilon for each generation. If None, epsilon
+                is adapted from the previous generation's distances. Default is None.
+            epsilon_quantile_level (float, optional): Quantile of the previous distances used as
+                epsilon when no schedule is given. Default is 0.5.
+            minimum_epsilon (float, optional): Stop once epsilon falls below this value. Default is None.
+            max_time (timedelta, optional): Time limit checked before each simulation. Default is None.
+            total_simulations_budget (int, optional): Maximum number of simulations across all
+                generations. Default is None.
+            perturbations (Dict[str, Perturbation], optional): Perturbation kernel per parameter.
+                Default is None (default continuous/discrete kernels).
+            verbose (bool, optional): Whether to print progress. Default is True.
 
-        # Run generations
-        start_time = datetime.now()
-        # _initialize_particles and _run_smc_generation receive n_simulations from
-        # previous generation and return the updated (accumulated) total.
-        n_simulations = 0
-        results = None
+        Returns:
+            CalibrationResults: Results of the last complete generation and its history. Empty if
+                generation 0 did not complete.
 
-        for gen in range(num_generations):
-            start_generation_time = datetime.now()
-
-            if gen == 0:
-                epsilon = (
-                    epsilon_schedule[0]
-                    if epsilon_schedule is not None
-                    else float("inf")
-                )
-                if verbose:
-                    print(
-                        f"\nGeneration {gen + 1}/{num_generations} (epsilon: {epsilon:.6f})"
-                    )
-                # Initialize particles, weights, distances, simulations
-                new_gen = self._initialize_particles(
-                    num_particles,
-                    epsilon,
-                    start_time,
-                    max_time,
-                    total_simulations_budget,
-                    n_simulations,
-                )
-                if new_gen is None:
-                    if verbose:
-                        print("Maximum time or budget reached during generation 0")
-                    break
-                n_simulations = new_gen["n_simulations"]
-
-                # Store results for generation 0
-                results = self._create_results(
-                    "smc",
-                    pd.DataFrame(
-                        data={
-                            self.param_names[i]: new_gen["particles"][:, i]
-                            for i in range(len(self.param_names))
-                        }
-                    ),
-                    new_gen["weights"],
-                    new_gen["distances"],
-                    new_gen["simulations"],
-                )
-
-                particles = new_gen["particles"]
-                weights = new_gen["weights"]
-                distances = new_gen["distances"]
-
-            else:
-                # Compute epsilon for this generation
-                epsilon = (
-                    epsilon_schedule[gen]
-                    if epsilon_schedule is not None
-                    else np.quantile(distances, epsilon_quantile_level)
-                )
-
-                if verbose:
-                    print(
-                        f"\nGeneration {gen + 1}/{num_generations} (epsilon: {epsilon:.6f})"
-                    )
-
-                # Update perturbations
-                for perturbation in perturbations.values():
-                    perturbation.update(particles, weights, self.param_names)
-
-                # Run generation
-                new_gen = self._run_smc_generation(
-                    particles,
-                    weights,
-                    epsilon,
-                    num_particles,
-                    perturbations,
-                    start_time,
-                    max_time,
-                    total_simulations_budget,
-                    n_simulations,
-                )
-                if new_gen is None:
-                    if verbose:
-                        print(
-                            f"Maximum time or budget reached during generation {gen + 1}, keeping last complete generation"
-                        )
-                    break
-                n_simulations = new_gen["n_simulations"]
-
-                # Store results
-                results.posterior_distributions[gen] = pd.DataFrame(
-                    data={
-                        self.param_names[i]: new_gen["particles"][:, i]
-                        for i in range(len(self.param_names))
-                    }
-                )
-                results.distances[gen] = new_gen["distances"]
-                results.weights[gen] = new_gen["weights"]
-                results.selected_trajectories[gen] = new_gen["simulations"]
-
-                # Update current generation
-                particles = new_gen["particles"]
-                weights = new_gen["weights"]
-                distances = new_gen["distances"]
-
-            if verbose:
-                # Print generation information
-                end_generation_time = datetime.now()
-                elapsed_time = end_generation_time - start_generation_time
-                formatted_time = f"{elapsed_time.seconds // 3600:02}:{(elapsed_time.seconds % 3600) // 60:02}:{elapsed_time.seconds % 60:02}"
-                acceptance_rate = (
-                    len(new_gen["particles"]) / new_gen["n_simulations"] * 100
-                )
-                print(
-                    f"\tAccepted {len(new_gen['particles'])}/{new_gen['n_simulations']} (acceptance rate: {acceptance_rate:.2f}%)"
-                )
-                print(f"\tElapsed time: {formatted_time}")
-
-            # Check stopping conditions between generations
-            if self._check_stopping_conditions(
-                epsilon,
-                minimum_epsilon,
-                start_time,
-                max_time,
-                n_simulations,
-                total_simulations_budget,
-            ):
-                break
-
-        # If generation 0 was interrupted before completing, return empty results
-        if results is None:
-            results = CalibrationResults(
-                calibration_strategy="smc",
-                observed_data=self.observed_data,
-                priors=self.priors,
-            )
-
-        return results
+        """
+        return self._execute_smc(
+            num_particles,
+            num_generations,
+            epsilon_schedule,
+            epsilon_quantile_level,
+            minimum_epsilon,
+            max_time,
+            total_simulations_budget,
+            perturbations,
+            verbose,
+        )
 
     def run_rejection(
         self,
@@ -317,134 +195,120 @@ class ABCSampler:
         verbose: bool = True,
         progress_update_interval: int = 1000,
     ) -> CalibrationResults:
-        """Run ABC rejection sampling."""
-        simulations, distances = [], []
-        sampled_params = {p: [] for p in self.param_names}
+        """
+        Run ABC rejection sampling.
 
-        start_time = datetime.now()
-        n_simulations = 0
-        last_print = 0  # For tracking progress updates
+        Candidates are drawn from the prior until num_particles have a distance below
+        epsilon, or a time/budget limit is reached. Simulations use the sampler RNG
+        when a seed was requested. A wall-clock cutoff can change which candidates
+        are evaluated.
 
+        Args:
+            epsilon (float, optional): Distance threshold for accepting a candidate. Default is 0.1.
+            num_particles (int, optional): Number of accepted particles to collect. Default is 1000.
+            max_time (timedelta, optional): Time limit checked before each simulation. Default is None.
+            total_simulations_budget (int, optional): Maximum number of simulations. Default is None.
+            verbose (bool, optional): Whether to print progress. Default is True.
+            progress_update_interval (int, optional): Number of simulations between progress
+                messages. Default is 1000.
+
+        Returns:
+            CalibrationResults: Accepted particles with uniform weights, stored as generation 0.
+
+        Raises:
+            ValueError: If progress_update_interval is not positive.
+        """
+        if progress_update_interval < 1:
+            raise ValueError("progress_update_interval must be positive")
         if verbose:
             print(
-                f"Starting ABC rejection sampling with {num_particles} particles and epsilon threshold {epsilon}"
+                f"Starting ABC rejection sampling with {num_particles} particles "
+                f"and epsilon threshold {epsilon}"
             )
+        last_print = 0
 
-        while len(distances) < num_particles:
-            # Check stopping conditions
-            if self._check_stopping_conditions(
-                None,
-                None,
-                start_time,
-                max_time,
-                n_simulations,
-                total_simulations_budget,
-            ):
-                break
-
-            # Sample and simulate
-            params = self._sample_parameters()
-            evaluated = self._evaluate_particle(params)
-            simulation = evaluated["simulation"]
-            distance = evaluated["distance"]
-            n_simulations += 1
-
-            if distance < epsilon:
-                simulations.append(simulation)
-                distances.append(distance)
-                for i, p in enumerate(self.param_names):
-                    sampled_params[p].append(params[i])
-
-            # Print progress every progress_update_interval simulations if verbose
-            if (
-                verbose
-                and n_simulations % progress_update_interval == 0
-                and n_simulations != last_print
-            ):
-                last_print = n_simulations
-                acceptance_rate = len(distances) / n_simulations * 100
+        def progress(completed, accepted):
+            # Report progress after candidate evaluations.
+            nonlocal last_print
+            if verbose and completed - last_print >= progress_update_interval:
+                last_print = completed
                 print(
-                    f"\tSimulations: {n_simulations}, Accepted: {len(distances)}, "
-                    f"Acceptance rate: {acceptance_rate:.2f}%"
+                    f"\tSimulations: {completed}, Accepted: {accepted}, "
+                    f"Acceptance rate: {accepted / completed * 100:.2f}%"
                 )
 
+        result = self._sample_particles(
+            num_particles,
+            epsilon,
+            start_time=datetime.now(),
+            max_time=max_time,
+            total_simulations_budget=total_simulations_budget,
+            progress=progress,
+        )
+        accepted = result["accepted_results"]
+        completed = result["n_simulations"]
         if verbose:
             print(
-                f"\tFinal: {len(distances)} particles accepted from {n_simulations} simulations "
-                f"({len(distances) / n_simulations * 100:.2f}% acceptance rate)"
+                f"\tFinal: {len(accepted)} particles accepted from {completed} simulations "
+                f"({len(accepted) / max(completed, 1) * 100:.2f}% acceptance rate)"
             )
-
         return self._create_results(
             "rejection",
-            pd.DataFrame(sampled_params),
-            np.ones(len(distances)) / len(distances),
-            np.array(distances),
-            simulations,
+            pd.DataFrame([r["params"] for r in accepted], columns=self.param_names),
+            np.ones(len(accepted)) / max(len(accepted), 1),
+            np.array([r["distance"] for r in accepted]),
+            [r["simulation"] for r in accepted],
         )
 
     def run_top_fraction(
-        self, top_fraction: float = 0.05, Nsim: int = 100, verbose: bool = True
+        self,
+        top_fraction: float = 0.05,
+        Nsim: int = 100,
+        verbose: bool = True,
     ) -> CalibrationResults:
-        """Run ABC top fraction selection."""
-        simulations, distances = [], []
-        sampled_params = {p: [] for p in self.param_names}
+        """
+        Run ABC top fraction selection.
 
+        Runs Nsim simulations from the prior and keeps those whose distance is within
+        the top_fraction quantile.
+
+        Args:
+            top_fraction (float, optional): Fraction of best-fitting simulations to keep, in (0, 1].
+                Default is 0.05.
+            Nsim (int, optional): Number of simulations to run. Default is 100.
+            verbose (bool, optional): Whether to print progress. Default is True.
+
+        Returns:
+            CalibrationResults: Selected particles with uniform weights, stored as generation 0.
+
+        Raises:
+            ValueError: If Nsim is not positive or top_fraction is not in (0, 1].
+        """
+        if Nsim < 1 or not 0 < top_fraction <= 1:
+            raise ValueError("Nsim must be positive and top_fraction must be in (0, 1]")
         if verbose:
             print(
-                f"Starting ABC top fraction selection with {Nsim} simulations and top {top_fraction * 100:.1f}% selected"
+                f"Starting ABC top fraction selection with {Nsim} simulations "
+                f"and top {top_fraction * 100:.1f}% selected"
             )
-
-        for n in range(Nsim):
-            params = self._sample_parameters()
-            evaluated = self._evaluate_particle(params)
-            simulation = evaluated["simulation"]
-            distance = evaluated["distance"]
-
-            simulations.append(simulation)
-            distances.append(distance)
-            for i, p in enumerate(self.param_names):
-                sampled_params[p].append(params[i])
-
-            # Print progress every 10% if verbose
-            if verbose and (n + 1) % max(1, Nsim // 10) == 0:
-                print(
-                    f"\tProgress: {n + 1}/{Nsim} simulations completed ({(n + 1) / Nsim * 100:.1f}%)"
-                )
-
-        # Select top fraction
+        results = self._sample_particles(Nsim, None)["accepted_results"]
+        distances = np.array([r["distance"] for r in results])
         threshold = np.quantile(distances, top_fraction)
-        mask = np.array(distances) <= threshold
-        n_selected = sum(mask)
-
+        mask = distances <= threshold
         if verbose:
             print(
-                f"\tSelected {n_selected} particles (top {top_fraction * 100:.1f}%) "
+                f"\tSelected {sum(mask)} particles (top {top_fraction * 100:.1f}%) "
                 f"with distance threshold {threshold:.6f}"
             )
-
         return self._create_results(
             "top_fraction",
-            pd.DataFrame(sampled_params)[mask],
+            pd.DataFrame([r["params"] for r in results], columns=self.param_names)[
+                mask
+            ],
             np.ones(sum(mask)) / sum(mask),
-            np.array(distances)[mask],
-            np.array(simulations)[mask],
+            distances[mask],
+            [r["simulation"] for r, keep in zip(results, mask) if keep],
         )
-
-    def _evaluate_particle(self, params):
-        """Evaluate one candidate using the sampler's existing random stream."""
-        return _worker.evaluate_particle(
-            self.simulation_function,
-            self.parameters,
-            self.param_names,
-            params,
-            self.observed_data,
-            self.distance_function,
-            rng=self.rng if self._seed_requested else None,
-        )
-
-    def _sample_parameters(self) -> List[float]:
-        """Sample parameters from priors."""
-        return sample_prior(self.priors, self.param_names, self.rng)
 
     def _create_results(
         self,
@@ -454,7 +318,19 @@ class ABCSampler:
         distances: np.ndarray,
         simulations: List[Dict],
     ) -> CalibrationResults:
-        """Create CalibrationResults object."""
+        """
+        Create a CalibrationResults object holding a single generation.
+
+        Args:
+            strategy (str): Name of the calibration strategy.
+            particles (pd.DataFrame): Accepted parameter values, one column per parameter.
+            weights (np.ndarray): Particle weights.
+            distances (np.ndarray): Particle distances.
+            simulations (List[Dict]): Simulation output of each particle.
+
+        Returns:
+            CalibrationResults: Results with the data stored as generation 0.
+        """
         return CalibrationResults(
             calibration_strategy=strategy,
             posterior_distributions={0: particles},
@@ -465,47 +341,65 @@ class ABCSampler:
             priors=self.priors,
         )
 
-    def _check_stopping_conditions(
+    def _generate_candidates(
         self,
-        epsilon: Optional[float],
-        minimum_epsilon: Optional[float],
-        start_time: datetime,
-        max_time: Optional[timedelta],
-        n_simulations: int,
-        total_simulations_budget: Optional[int],
-        verbose: bool = True,
-    ) -> bool:
-        """Check if any stopping condition is met (epsilon convergence, time limit, or budget).
+        epsilon=None,
+        particles=None,
+        weights=None,
+        perturbations=None,
+        deadline=None,
+        *,
+        root_rng=None,
+    ):
+        """
+        Yield prior or perturbed candidates using the sampler's existing RNG.
 
-        Use verbose=False from per-simulation calls to avoid repeated output.
+        Proposal retries and simulation draws advance the same generator, preserving
+        the sequential random stream used before candidate collection was extracted.
 
         Args:
-            epsilon (float, optional): Current epsilon value
-            minimum_epsilon (float, optional): Minimum allowable epsilon value
-            start_time (datetime): Start time of the calibration run
-            max_time (timedelta, optional): Maximum allowed runtime
-            n_simulations (int): Number of simulations performed so far
-            total_simulations_budget (int, optional): Maximum number of allowed simulations
-            verbose (bool): Whether to print a message when a condition is met
+            epsilon (float, optional): Acceptance threshold passed to the worker. Default is None (accept all).
+            particles (np.ndarray, optional): Previous generation, one row per particle. If None,
+                candidates are drawn from the prior; otherwise a particle is resampled by weight and
+                perturbed until it has non-zero prior density. Default is None.
+            weights (np.ndarray, optional): Weights of the previous generation. Default is None.
+            perturbations (Dict[str, Perturbation], optional): Perturbation kernel per parameter.
+                Default is None.
+            deadline (datetime, optional): Stop yielding after this time. Default is None.
+            root_rng (np.random.Generator, optional): Random source. Defaults to
+                self.rng; SMC supplies its current generator.
 
-        Returns:
-            bool: True if any stopping condition is met, False otherwise
+        Yields:
+            tuple: Candidate parameter values, acceptance threshold and simulation RNG.
         """
-        if minimum_epsilon and epsilon and epsilon < minimum_epsilon:
-            if verbose:
-                print("Minimum epsilon reached")
-            return True
-        if max_time and datetime.now() - start_time > max_time:
-            if verbose:
-                print("Maximum time reached")
-            return True
-        if total_simulations_budget and n_simulations > total_simulations_budget:
-            if verbose:
-                print("Total simulations budget reached")
-            return True
-        return False
+        root_rng = self.rng if root_rng is None else root_rng
+        while deadline is None or datetime.now() < deadline:
+            rng = root_rng
+            if particles is None:
+                params = sample_prior(self.priors, self.param_names, rng)
+            else:
+                while True:
+                    if deadline is not None and datetime.now() >= deadline:
+                        return
+                    index = rng.choice(len(particles), p=weights / weights.sum())
+                    params = [
+                        perturbations[p].propose(particles[index, i], rng)
+                        for i, p in enumerate(self.param_names)
+                    ]
+                    if all(
+                        (
+                            self.priors[p].pdf(params[i])
+                            if p in self.continuous_params
+                            else self.priors[p].pmf(params[i])
+                        )
+                        > 0
+                        for i, p in enumerate(self.param_names)
+                    ):
+                        break
+            candidate_rng = rng if self._seed_requested else None
+            yield params, epsilon, candidate_rng
 
-    def _initialize_particles(
+    def _sample_particles(
         self,
         num_particles,
         epsilon,
@@ -513,159 +407,61 @@ class ABCSampler:
         max_time=None,
         total_simulations_budget=None,
         n_simulations=0,
+        particles=None,
+        weights=None,
+        perturbations=None,
+        progress=None,
+        *,
+        root_rng=None,
+        inclusive=False,
     ):
+        """Collect accepted candidates sequentially within the remaining budget.
+
+        Shared by rejection, top-fraction selection, and SMC generations.
+        Check cutoffs before requesting the next candidate so no extra simulation
+        runs after the target or budget is reached. A time limit cannot interrupt
+        an ongoing simulation. Return accepted results and this call's evaluation
+        count, including rejected candidates.
         """
-        Initialize the first generation of particles by sampling from priors.
-
-        Args:
-            num_particles (int): Number of particles to generate
-            epsilon (float): Epsilon threshold for initial generation
-            start_time (datetime, optional): Start time for time limit checking
-            max_time (timedelta, optional): Maximum allowed runtime
-            total_simulations_budget (int, optional): Maximum number of simulations
-            n_simulations (int): Running count of simulations performed so far
-
-        Returns:
-            tuple: (particles, weights, distances, simulations) where
-                - particles: numpy array of shape (num_particles, num_parameters)
-                - weights: numpy array of uniform weights
-                - distances: numpy array of distances between simulations and observed data
-                - simulations: list of simulation results
-                Returns None if stopped early by time/budget limits.
-        """
-        particles, weights, distances, simulations = [], [], [], []
-
-        # Sample from priors and run simulations
-        while len(particles) < num_particles:
-            # Check stopping conditions per simulation
-            if self._check_stopping_conditions(
-                None,
-                None,
-                start_time,
-                max_time,
-                n_simulations,
-                total_simulations_budget,
-                verbose=False,
-            ):
-                return None
-
-            params = sample_prior(self.priors, self.param_names, self.rng)
-            evaluated = self._evaluate_particle(params)
-            simulated_data = evaluated["simulation"]
-            dist = evaluated["distance"]
-            n_simulations += 1
-
-            if dist <= epsilon:
-                particles.append(params)
-                weights.append(1.0 / num_particles)  # Uniform weights initially
-                distances.append(dist)
-                simulations.append(simulated_data)
-
-        return {
-            "particles": np.array(particles),
-            "weights": np.array(weights),
-            "distances": np.array(distances),
-            "simulations": simulations,
-            "n_simulations": n_simulations,
-        }
-
-    def _run_smc_generation(
-        self,
-        particles: np.ndarray,
-        weights: np.ndarray,
-        epsilon: float,
-        num_particles: int,
-        perturbations: Dict[str, Any],
-        start_time=None,
-        max_time=None,
-        total_simulations_budget=None,
-        n_simulations=0,
-    ) -> Optional[Dict[str, Any]]:
-        """Run a single generation of ABC-SMC.
-
-        Returns None if stopped early by time/budget limits.
-        """
-        new_particles, new_weights, new_distances, new_simulations = [], [], [], []
-
-        for _ in range(num_particles):
-            while True:
-                # Check stopping conditions inside inner loop
-                if self._check_stopping_conditions(
-                    None,
-                    None,
-                    start_time,
-                    max_time,
-                    n_simulations,
-                    total_simulations_budget,
-                    verbose=False,
-                ):
-                    return None
-
-                # Resample a particle based on weights
-                index = self.rng.choice(len(particles), p=weights / weights.sum())
-                candidate_params = particles[index]
-
-                # Propose new parameters (perturbation kernel)
-                perturbed_params = [
-                    perturbations[self.param_names[i]].propose(
-                        candidate_params[i], self.rng
-                    )
-                    for i in range(len(self.param_names))
-                ]
-
-                # Check if perturbed parameters have prior probability > 0
-                prior_probabilities = [
-                    self.priors[param].pdf(perturbed_params[i])
-                    if param in self.continuous_params
-                    else self.priors[param].pmf(perturbed_params[i])
-                    for i, param in enumerate(self.param_names)
-                ]
-                if all(prob > 0 for prob in prior_probabilities):
-                    evaluated = self._evaluate_particle(perturbed_params)
-                    simulation = evaluated["simulation"]
-                    distance = evaluated["distance"]
-                    n_simulations += 1
-
-                    if distance < epsilon:
-                        new_particles.append(perturbed_params)
-                        weight_numerator = np.prod(
-                            [
-                                self.priors[param].pdf(perturbed_params[i])
-                                if param in self.continuous_params
-                                else self.priors[param].pmf(perturbed_params[i])
-                                for i, param in enumerate(self.param_names)
-                            ]
-                        )
-                        weight_denominator = np.sum(
-                            [
-                                weights[j]
-                                * np.prod(
-                                    [
-                                        perturbations[self.param_names[i]].pdf(
-                                            perturbed_params[i], particles[j][i]
-                                        )
-                                        for i in range(len(self.param_names))
-                                    ]
-                                )
-                                for j in range(len(particles))
-                            ]
-                        )
-                        new_weights.append(weight_numerator / weight_denominator)
-                        new_distances.append(distance)
-                        new_simulations.append(simulation)
-                        break
-
-        # Normalize weights
-        new_weights = np.array(new_weights)
-        new_weights /= new_weights.sum()
-
-        return {
-            "particles": np.array(new_particles),
-            "weights": np.array(new_weights),
-            "distances": np.array(new_distances),
-            "simulations": new_simulations,
-            "n_simulations": n_simulations,
-        }
+        if num_particles < 1:
+            raise ValueError("n_target must be positive")
+        deadline = start_time + max_time if max_time is not None else None
+        remaining = (
+            total_simulations_budget - n_simulations
+            if total_simulations_budget is not None
+            else None
+        )
+        candidates = self._generate_candidates(
+            epsilon, particles, weights, perturbations, deadline, root_rng=root_rng
+        )
+        accepted = []
+        completed = 0
+        while len(accepted) < num_particles:
+            if remaining is not None and completed >= remaining:
+                break
+            if deadline is not None and datetime.now() >= deadline:
+                break
+            try:
+                params, threshold, rng = next(candidates)
+            except StopIteration:
+                break
+            result = _worker.evaluate_particle(
+                self.simulation_function,
+                self.parameters,
+                self.param_names,
+                params,
+                self.observed_data,
+                self.distance_function,
+                threshold,
+                rng,
+                inclusive=inclusive,
+            )
+            completed += 1
+            if result["accepted"]:
+                accepted.append(result)
+            if progress is not None:
+                progress(completed, len(accepted))
+        return {"accepted_results": accepted, "n_simulations": completed}
 
     def run_projections(
         self,
@@ -765,3 +561,294 @@ class ABCSampler:
         )
 
         return copy.deepcopy(self.results)
+
+    def _execute_smc(
+        self,
+        num_particles,
+        num_generations,
+        epsilon_schedule,
+        epsilon_quantile_level,
+        minimum_epsilon,
+        max_time,
+        total_simulations_budget,
+        perturbations,
+        verbose,
+    ) -> CalibrationResults:
+        """
+        Run the ABC-SMC generations sequentially.
+
+        Args:
+            num_particles, num_generations, epsilon_schedule, epsilon_quantile_level,
+            minimum_epsilon, max_time, total_simulations_budget, perturbations, verbose:
+                See `ABCSampler.run_smc`.
+
+        Returns:
+            CalibrationResults: See `ABCSampler.run_smc`.
+        """
+        # Initialize perturbations if not provided
+        if perturbations is None:
+            perturbations = {
+                param: (
+                    DefaultPerturbationContinuous(param)
+                    if hasattr(self.priors[param], "pdf")
+                    else DefaultPerturbationDiscrete(param, self.priors[param])
+                )
+                for param in self.param_names
+            }
+
+        if verbose:
+            print(
+                f"Starting ABC-SMC with {num_particles} particles and {num_generations} generations"
+            )
+
+        start_time = datetime.now()
+        n_simulations = 0
+        results = CalibrationResults(
+            calibration_strategy="smc",
+            observed_data=self.observed_data,
+            priors=self.priors,
+        )
+        particles = weights = distances = None
+        for gen in range(num_generations):
+            start_generation_time = datetime.now()
+
+            if epsilon_schedule is not None:
+                epsilon = epsilon_schedule[gen]
+            elif gen == 0:
+                epsilon = float("inf")
+            else:
+                epsilon = np.quantile(distances, epsilon_quantile_level)
+            if verbose:
+                print(
+                    f"\nGeneration {gen + 1}/{num_generations} (epsilon: {epsilon:.6f})"
+                )
+            if gen > 0:
+                for perturbation in perturbations.values():
+                    perturbation.update(particles, weights, self.param_names)
+
+            new_gen = self._run_smc_generation(
+                particles,
+                weights,
+                epsilon,
+                num_particles,
+                perturbations,
+                start_time,
+                max_time,
+                total_simulations_budget,
+                n_simulations,
+            )
+            if new_gen is None:
+                if verbose:
+                    print(
+                        "Maximum time or budget reached during generation 0"
+                        if gen == 0
+                        else f"Maximum time or budget reached during generation {gen + 1}, keeping last complete generation"
+                    )
+                break
+
+            n_simulations = new_gen["n_simulations"]
+            particles = new_gen["particles"]
+            weights = new_gen["weights"]
+            distances = new_gen["distances"]
+            values = {
+                "posterior_distributions": pd.DataFrame(
+                    particles, columns=self.param_names, copy=True
+                ),
+                "weights": weights,
+                "distances": distances,
+                "selected_trajectories": new_gen["simulations"],
+            }
+            for name, value in values.items():
+                getattr(results, name)[gen] = value
+
+            if verbose:
+                # Print generation information
+                end_generation_time = datetime.now()
+                elapsed_time = end_generation_time - start_generation_time
+                formatted_time = f"{elapsed_time.seconds // 3600:02}:{(elapsed_time.seconds % 3600) // 60:02}:{elapsed_time.seconds % 60:02}"
+                acceptance_rate = (
+                    len(new_gen["particles"]) / new_gen["n_simulations"] * 100
+                )
+                print(
+                    f"\tAccepted {len(new_gen['particles'])}/{new_gen['n_simulations']} (acceptance rate: {acceptance_rate:.2f}%)"
+                )
+                print(f"\tElapsed time: {formatted_time}")
+
+            # Check stopping conditions between generations
+            if self._check_stopping_conditions(
+                epsilon,
+                minimum_epsilon,
+                start_time,
+                max_time,
+                n_simulations,
+                total_simulations_budget,
+            ):
+                break
+
+        return results
+
+    def _run_smc_generation(
+        self,
+        particles,
+        weights,
+        epsilon,
+        num_particles,
+        perturbations,
+        start_time,
+        max_time,
+        total_simulations_budget,
+        n_simulations,
+    ):
+        """
+        Run one SMC generation and compute the importance weights.
+
+        Preserve the original boundary rule: generation 0 accepts distance <= epsilon;
+        subsequent generations require distance < epsilon.
+
+        Args:
+            particles (np.ndarray or None): Previous generation, one row per particle; None for generation 0.
+            weights (np.ndarray or None): Weights of the previous generation.
+            epsilon (float): Acceptance threshold for this generation.
+            num_particles (int): Number of particles to accept.
+            perturbations (Dict[str, Perturbation]): Perturbation kernel per parameter.
+            start_time (datetime): Start of the calibration run.
+            max_time (timedelta, optional): Time limit measured from start_time.
+            total_simulations_budget (int, optional): Maximum number of simulations across the whole run.
+            n_simulations (int): Simulations already run in earlier generations.
+
+        Returns:
+            Dict[str, Any] or None: A dictionary with keys "particles", "weights", "distances",
+                "simulations" and "n_simulations" (cumulative total), or None if a time/budget
+                limit stopped the generation before num_particles were accepted.
+        """
+        result = self._sample_particles(
+            num_particles,
+            epsilon,
+            start_time,
+            max_time,
+            total_simulations_budget,
+            n_simulations,
+            particles,
+            weights,
+            perturbations,
+            root_rng=self.rng,
+            inclusive=particles is None,
+        )
+        accepted = result["accepted_results"]
+        if len(accepted) < num_particles:
+            return None
+        new_particles = np.array([r["params"] for r in accepted])
+        new_weights = self._compute_particle_weights(
+            new_particles,
+            particles,
+            weights,
+            self.priors,
+            self.param_names,
+            perturbations,
+        )
+        return {
+            "particles": new_particles,
+            "weights": new_weights,
+            "distances": np.array([r["distance"] for r in accepted]),
+            "simulations": [r["simulation"] for r in accepted],
+            "n_simulations": n_simulations + result["n_simulations"],
+        }
+
+    def _compute_particle_weights(
+        self,
+        particles,
+        previous_particles,
+        previous_weights,
+        priors,
+        param_names,
+        perturbations,
+    ):
+        """Compute normalized ABC-SMC importance weights without changing inputs.
+
+        Rows of both particle arrays follow ``param_names``. If ``previous_particles``
+        is None, the candidates were drawn from the prior and receive uniform weights.
+        Otherwise, divide the joint prior density by the previous weighted kernel
+        mixture. Kernels must already be updated for the previous generation.
+        """
+        continuous_params = {
+            name for name in param_names if hasattr(priors[name], "pdf")
+        }
+        # Generation 0 samples the prior, so all weights are equal. Later
+        # generations use the ABC-SMC importance weight
+        #   w_i = prior(theta_i) / sum_j w_j * K(theta_i | theta_j),
+        # where K is the product of the per-parameter perturbation kernels.
+        new_weights = np.ones(len(particles))
+        if previous_particles is not None:
+            for i, params in enumerate(particles):
+                numerator = np.prod(
+                    [
+                        priors[p].pdf(params[k])
+                        if p in continuous_params
+                        else priors[p].pmf(params[k])
+                        for k, p in enumerate(param_names)
+                    ]
+                )
+                denominator = np.sum(
+                    [
+                        previous_weights[j]
+                        * np.prod(
+                            [
+                                perturbations[p].pdf(
+                                    params[k], previous_particles[j, k]
+                                )
+                                for k, p in enumerate(param_names)
+                            ]
+                        )
+                        for j in range(len(previous_particles))
+                    ]
+                )
+                new_weights[i] = numerator / denominator
+        new_weights /= new_weights.sum()
+        return new_weights
+
+    def _check_stopping_conditions(
+        self,
+        epsilon: Optional[float],
+        minimum_epsilon: Optional[float],
+        start_time: datetime,
+        max_time: Optional[timedelta],
+        n_simulations: int,
+        total_simulations_budget: Optional[int],
+        verbose: bool = True,
+    ) -> bool:
+        """Check if any stopping condition is met (epsilon convergence, time limit, or budget).
+
+        Use verbose=False from per-simulation calls to avoid repeated output.
+
+        Args:
+            epsilon (float, optional): Current epsilon value
+            minimum_epsilon (float, optional): Minimum allowable epsilon value
+            start_time (datetime): Start time of the calibration run
+            max_time (timedelta, optional): Maximum allowed runtime
+            n_simulations (int): Number of simulations performed so far
+            total_simulations_budget (int, optional): Maximum number of allowed simulations
+            verbose (bool): Whether to print a message when a condition is met
+
+        Returns:
+            bool: True if any stopping condition is met, False otherwise
+        """
+        if (
+            minimum_epsilon is not None
+            and epsilon is not None
+            and epsilon < minimum_epsilon
+        ):
+            if verbose:
+                print("Minimum epsilon reached")
+            return True
+        if max_time is not None and datetime.now() - start_time >= max_time:
+            if verbose:
+                print("Maximum time reached")
+            return True
+        if (
+            total_simulations_budget is not None
+            and n_simulations >= total_simulations_budget
+        ):
+            if verbose:
+                print("Total simulations budget reached")
+            return True
+        return False
