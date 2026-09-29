@@ -1,10 +1,16 @@
-"""ABC-SMC generations and stopping conditions.
+"""ABC-SMC run lifecycle: generations, stopping, checkpointing and resume.
 
-The caller supplies candidate collection and owns the executor.
+The caller supplies candidate collection and owns the executor. This module
+owns SMC state and delegates archive I/O to the checkpoint module.
 """
 
-from datetime import datetime, timedelta
+import copy
+import warnings
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from time import monotonic
 from typing import Optional
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -14,6 +20,7 @@ from ..utils.abc_smc_utils import (
     DefaultPerturbationDiscrete,
     compute_particle_weights,
 )
+from . import _checkpoint
 from .calibration_results import CalibrationResults
 
 
@@ -22,10 +29,10 @@ class SMCRun:
 
     Fixed inputs are references to the caller's model and data. ``sample_particles``
     accepts generation parameters and ``root_rng`` and returns accepted candidates
-    plus the number of evaluations.
+    plus the number of evaluations. It does not depend on SMC persistence.
     """
 
-    def __init__(self, particle_inputs, priors, rng, sample_particles):
+    def __init__(self, particle_inputs, priors, rng, seed_requested, sample_particles):
         (
             self.simulation_function,
             self.parameters,
@@ -35,6 +42,7 @@ class SMCRun:
         ) = particle_inputs
         self.priors = priors
         self.rng = rng
+        self.seed_requested = seed_requested
         self.sample_particles = sample_particles
 
     def execute(
@@ -50,14 +58,16 @@ class SMCRun:
         verbose,
         pool,
         scheduler,
+        checkpoint_path,
+        resume,
     ) -> CalibrationResults:
         """
         Run the ABC-SMC generations inside an already opened worker pool.
 
         Args:
             num_particles, num_generations, epsilon_schedule, epsilon_quantile_level,
-            minimum_epsilon, max_time, total_simulations_budget, perturbations, verbose:
-                See `ABCSampler.run_smc`.
+            minimum_epsilon, max_time, total_simulations_budget, perturbations, verbose,
+            checkpoint_path, resume: See `ABCSampler.run_smc`.
             pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
             scheduler (DynamicParticleScheduler): Scheduler collecting accepted particles.
 
@@ -75,20 +85,131 @@ class SMCRun:
                 for param in self.param_names
             }
 
+        # --- Validate options -------------------------------------------------
+        if resume and checkpoint_path is None:
+            raise ValueError("resume=True requires checkpoint_path")
+        # --- Checkpoint setup -------------------------------------------------
+        # inputs: deep-copied snapshot of everything that defines the run; its
+        #   hash guards against resuming with different data or settings.
+        # metadata: human-readable manifest, updated after every generation.
+        # restored: saved state when resuming, otherwise None.
+        inputs = metadata = restored = None
+        if checkpoint_path is not None:
+            if not self.seed_requested:
+                raise ValueError(
+                    "Checkpointing requires an explicit rng seed or Generator"
+                )
+            checkpoint_path = Path(checkpoint_path)
+            if not resume and checkpoint_path.exists():
+                raise FileExistsError(
+                    f"Checkpoint already exists: {checkpoint_path}; use resume=True"
+                )
+            if not checkpoint_path.parent.is_dir():
+                raise FileNotFoundError(
+                    f"Checkpoint directory does not exist: {checkpoint_path.parent}"
+                )
+            inputs = self._snapshot_checkpoint_inputs(
+                num_particles,
+                epsilon_schedule,
+                epsilon_quantile_level,
+                minimum_epsilon,
+                perturbations,
+            )
+            fingerprint = _checkpoint.input_hash(inputs)
+            # Fail before running simulations if the snapshot cannot be serialized.
+            _checkpoint.validate_picklable(inputs)
+            if resume:
+                # Load the last complete generation and check it is compatible
+                # with this call. Settings that only extend the run (more
+                # generations, larger budget, other worker count) may change.
+                restored, metadata = _checkpoint.read_checkpoint(checkpoint_path)
+                if fingerprint != metadata["input_sha256"]:
+                    raise ValueError(
+                        "Checkpoint inputs or SMC settings do not match this sampler"
+                    )
+                if num_generations < restored["next_generation"]:
+                    raise ValueError("num_generations precedes the saved generation")
+                if (
+                    total_simulations_budget is not None
+                    and total_simulations_budget < restored["n_simulations"]
+                ):
+                    raise ValueError(
+                        "total_simulations_budget is below the saved simulation count"
+                    )
+                current_environment = _checkpoint.environment()
+                if metadata["environment"] != current_environment:
+                    warnings.warn(
+                        "Checkpoint code or library versions differ; exact replay is not guaranteed.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                metadata["environment"] = current_environment
+                # Continue from the saved kernels and RNG position, so a resumed
+                # run matches an uninterrupted one.
+                inputs = restored["inputs"]
+                perturbations = restored["perturbations"]
+                self.rng = np.random.Generator(
+                    restored["rng_type"](restored["rng_seed_sequence"])
+                )
+                self.rng.bit_generator.state = restored["rng_state"]
+            else:
+                metadata = {
+                    "strategy": "smc",
+                    "run_id": str(uuid4()),
+                    "param_names": self.param_names,
+                    "num_particles": int(num_particles),
+                    "epsilon_quantile_level": float(epsilon_quantile_level),
+                    "minimum_epsilon": str(minimum_epsilon)
+                    if minimum_epsilon is not None
+                    else None,
+                    "epsilon_schedule": [str(v) for v in epsilon_schedule]
+                    if epsilon_schedule is not None
+                    else None,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "input_sha256": fingerprint,
+                    "environment": _checkpoint.environment(),
+                }
+
         if verbose:
             print(
                 f"Starting ABC-SMC with {num_particles} particles and {num_generations} generations"
             )
 
+        # --- Run generations --------------------------------------------------
+        # start_time drives max_time, which restarts with every call.
+        # call_start + elapsed_before track total run time across resumes.
         start_time = datetime.now()
-        n_simulations = 0
-        results = CalibrationResults(
-            calibration_strategy="smc",
-            observed_data=self.observed_data,
-            priors=self.priors,
+        call_start = monotonic()
+        elapsed_before = restored["elapsed_seconds"] if restored is not None else 0.0
+        n_simulations = restored["n_simulations"] if restored is not None else 0
+        results = (
+            restored["results"]
+            if restored is not None
+            else CalibrationResults(
+                calibration_strategy="smc",
+                observed_data=self.observed_data,
+                priors=self.priors,
+            )
         )
         particles = weights = distances = None
-        for gen in range(num_generations):
+        first_generation = restored["next_generation"] if restored is not None else 0
+        if restored is not None:
+            # State of the last saved generation, needed to propose the next one.
+            particles = results.get_posterior_distribution().to_numpy()
+            weights = results.get_weights()
+            distances = results.get_distances()
+            if _check_stopping_conditions(
+                restored["epsilon"],
+                minimum_epsilon,
+                start_time,
+                max_time,
+                n_simulations,
+                total_simulations_budget,
+                verbose=verbose,
+            ):
+                return results
+
+        for gen in range(first_generation, num_generations):
             start_generation_time = datetime.now()
 
             if epsilon_schedule is not None:
@@ -155,6 +276,41 @@ class SMCRun:
                 )
                 print(f"\tElapsed time: {formatted_time}")
 
+            # Save after every complete generation; an interrupted generation
+            # is simply rerun on resume.
+            if checkpoint_path is not None:
+                elapsed = elapsed_before + monotonic() - call_start
+                state = self._build_checkpoint_state(
+                    inputs,
+                    results,
+                    perturbations,
+                    next_generation=gen + 1,
+                    epsilon=epsilon,
+                    n_simulations=n_simulations,
+                    elapsed_seconds=elapsed,
+                )
+                metadata.update(
+                    {
+                        "completed_generation": gen,
+                        "n_simulations": n_simulations,
+                        "elapsed_seconds": elapsed,
+                        "epsilon": str(epsilon),
+                        "num_generations": num_generations,
+                        "total_simulations_budget": total_simulations_budget,
+                        "max_time_seconds": max_time.total_seconds()
+                        if max_time is not None
+                        else None,
+                        "n_workers": getattr(pool, "_max_workers", None),
+                    }
+                )
+                _checkpoint.write_checkpoint(
+                    checkpoint_path,
+                    state,
+                    metadata,
+                    # The first write of a fresh run must not replace a file.
+                    overwrite=resume or gen > 0,
+                )
+
             # Check stopping conditions between generations
             if _check_stopping_conditions(
                 epsilon,
@@ -167,6 +323,66 @@ class SMCRun:
                 break
 
         return results
+
+    def _snapshot_checkpoint_inputs(
+        self,
+        num_particles,
+        epsilon_schedule,
+        epsilon_quantile_level,
+        minimum_epsilon,
+        perturbations,
+    ):
+        """Copy the inputs defining a run for checkpoint hashing and persistence.
+
+        Excludes the caller's RNG: its current state is saved separately.
+        Does not mutate sampler inputs or perform I/O.
+        """
+        return copy.deepcopy(
+            {
+                "observed_data": self.observed_data,
+                "parameters": {k: v for k, v in self.parameters.items() if k != "rng"},
+                "priors": self.priors,
+                "param_names": self.param_names,
+                "simulation_function": self.simulation_function,
+                "distance_function": self.distance_function,
+                "num_particles": num_particles,
+                "epsilon_schedule": epsilon_schedule,
+                "epsilon_quantile_level": epsilon_quantile_level,
+                "minimum_epsilon": minimum_epsilon,
+                "perturbations": perturbations,
+            }
+        )
+
+    def _build_checkpoint_state(
+        self,
+        inputs,
+        results,
+        perturbations,
+        *,
+        next_generation,
+        epsilon,
+        n_simulations,
+        elapsed_seconds,
+    ):
+        """Assemble resumable state without I/O or advancing the sampler RNG.
+
+        Results, input snapshots and kernels are referenced, not copied; the
+        caller must serialize the state before continuing calibration.
+        """
+        return {
+            "inputs": inputs,
+            "results": results,
+            "rng_type": type(self.rng.bit_generator),
+            "rng_state": self.rng.bit_generator.state,
+            # seed_seq is public only since NumPy 1.25.
+            "rng_seed_sequence": getattr(self.rng.bit_generator, "seed_seq", None)
+            or self.rng.bit_generator._seed_seq,
+            "perturbations": perturbations,
+            "next_generation": next_generation,
+            "epsilon": epsilon,
+            "n_simulations": n_simulations,
+            "elapsed_seconds": elapsed_seconds,
+        }
 
     def _run_generation(
         self,

@@ -128,6 +128,8 @@ class ABCSampler:
         - `total_simulations_budget` (`Optional[int]`, default: `None`): Maximum number of allowed simulations.
         - `perturbations` (`Optional[Dict[str, Any]]`, default: `None`): Perturbation kernels for parameters.
         - `verbose` (`bool`, default: `True`): Whether to print progress updates.
+        - `checkpoint_path`: Optional file saving inputs and each complete generation.
+        - `resume`: Restore a trusted checkpoint; default False. Requires checkpoint_path.
 
         #### `"rejection"` (ABC Rejection Sampling)
         - `epsilon` (`float`, default: `0.1`): Distance threshold for accepting samples.
@@ -189,9 +191,11 @@ class ABCSampler:
         n_workers: Optional[int] = None,
         executor: Optional[ProcessPoolExecutor] = None,
         parallel_strategy: str = "dynamic",
+        checkpoint_path: Optional[str] = None,
+        resume: bool = False,
     ) -> CalibrationResults:
         """
-        Run ABC-SMC and retain each complete generation in memory.
+        Run ABC-SMC, optionally saving every complete generation to a checkpoint.
 
         Args:
             num_particles (int, optional): Number of particles per generation. Default is 1000.
@@ -202,7 +206,7 @@ class ABCSampler:
                 epsilon when no schedule is given. Default is 0.5.
             minimum_epsilon (float, optional): Stop once epsilon falls below this value. Default is None.
             max_time (timedelta, optional): Time limit for submitting work; already-submitted
-                simulations finish. Default is None.
+                simulations finish. Restarts on every call, including resumes. Default is None.
             total_simulations_budget (int, optional): Maximum number of simulations across all
                 generations. Default is None.
             perturbations (Dict[str, Perturbation], optional): Perturbation kernel per parameter.
@@ -214,19 +218,30 @@ class ABCSampler:
                 over n_workers. Default is None.
             parallel_strategy (str, optional): Parallel scheduling strategy. Only "dynamic" is supported.
                 Default is "dynamic".
+            checkpoint_path (str or Path, optional): Local snapshot containing inputs, results, RNG and
+                kernels. Requires an explicit seed and picklable, hashable input data. Existing files
+                are rejected unless resume=True. Only load trusted checkpoints. Default is None.
+            resume (bool, optional): Restore the last complete generation from checkpoint_path. The
+                sampler must have matching inputs/settings. RNG state comes from the checkpoint;
+                workers, target generations and total budget may change. Incomplete generations are
+                rerun. Default is False.
 
         Returns:
             CalibrationResults: Results of the last complete generation and its history. Empty if
                 generation 0 did not complete.
 
         Raises:
-            TypeError: If executor is not a ProcessPoolExecutor.
+            ValueError: If the options are inconsistent, or the checkpoint does not match this sampler.
+            FileExistsError: If checkpoint_path exists and resume is False.
+            FileNotFoundError: If the checkpoint directory is missing.
+            TypeError: If executor is not a ProcessPoolExecutor, or the inputs cannot be checkpointed.
         """
         scheduler = create_particle_scheduler(parallel_strategy)
         smc_run = _smc.SMCRun(
             self._get_particle_inputs(),
             self.priors,
             self.rng,
+            self._seed_requested,
             self._sample_particles,
         )
         try:
@@ -243,9 +258,11 @@ class ABCSampler:
                     verbose=verbose,
                     pool=pool,
                     scheduler=scheduler,
+                    checkpoint_path=checkpoint_path,
+                    resume=resume,
                 )
         finally:
-            # Preserve the run generator even after a failure.
+            # Resume may replace the generator; preserve it even after a failure.
             self.rng = smc_run.rng
 
     def run_rejection(
@@ -487,7 +504,7 @@ class ABCSampler:
                 Default is None.
             deadline (datetime, optional): Stop yielding after this time. Default is None.
             root_rng (np.random.Generator, optional): Generation seed source. Defaults to
-                self.rng; SMC supplies its current generator.
+                self.rng; SMC supplies its current generator when resuming.
 
         Yields:
             tuple: Candidate parameter values, acceptance threshold and simulation RNG.
