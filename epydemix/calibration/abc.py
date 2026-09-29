@@ -10,6 +10,7 @@ from ..utils.abc_smc_utils import (
     DefaultPerturbationDiscrete,
     sample_prior,
 )
+from . import _worker
 from .calibration_results import CalibrationResults
 from .metrics import rmse
 
@@ -343,8 +344,9 @@ class ABCSampler:
 
             # Sample and simulate
             params = self._sample_parameters()
-            simulation = self._run_simulation(params)
-            distance = self.distance_function(self.observed_data, simulation)
+            evaluated = self._evaluate_particle(params)
+            simulation = evaluated["simulation"]
+            distance = evaluated["distance"]
             n_simulations += 1
 
             if distance < epsilon:
@@ -394,8 +396,9 @@ class ABCSampler:
 
         for n in range(Nsim):
             params = self._sample_parameters()
-            simulation = self._run_simulation(params)
-            distance = self.distance_function(self.observed_data, simulation)
+            evaluated = self._evaluate_particle(params)
+            simulation = evaluated["simulation"]
+            distance = evaluated["distance"]
 
             simulations.append(simulation)
             distances.append(distance)
@@ -427,25 +430,17 @@ class ABCSampler:
             np.array(simulations)[mask],
         )
 
-    def _run_simulation(self, params: List[float]) -> Dict[str, Any]:
-        """Run a single simulation with given parameters."""
-        full_params = {**self.parameters, **dict(zip(self.param_names, params))}
-        # Inject the sampler's Generator only when the user asked for reproducibility
-        # (rng= or parameters["rng"]). This makes rng-aware simulations (e.g.
-        # epydemix's `simulate`) reproducible and, when an int/seed was passed, avoids
-        # reseeding every particle identically.
-        if self._seed_requested:
-            full_params["rng"] = self.rng
-        simulation = self.simulation_function(full_params)
-        return self._validate_simulation(simulation)
-
-    def _validate_simulation(self, simulation: Any) -> Dict[str, Any]:
-        """Ensure simulation output is in correct format."""
-        if not isinstance(simulation, dict):
-            raise ValueError(
-                f"Simulation must return dictionary, got {type(simulation)}"
-            )
-        return simulation
+    def _evaluate_particle(self, params):
+        """Evaluate one candidate using the sampler's existing random stream."""
+        return _worker.evaluate_particle(
+            self.simulation_function,
+            self.parameters,
+            self.param_names,
+            params,
+            self.observed_data,
+            self.distance_function,
+            rng=self.rng if self._seed_requested else None,
+        )
 
     def _sample_parameters(self) -> List[float]:
         """Sample parameters from priors."""
@@ -555,10 +550,9 @@ class ABCSampler:
                 return None
 
             params = sample_prior(self.priors, self.param_names, self.rng)
-            simulated_data = self._run_simulation(params)
-            dist = self.distance_function(
-                data=self.observed_data, simulation=simulated_data
-            )
+            evaluated = self._evaluate_particle(params)
+            simulated_data = evaluated["simulation"]
+            dist = evaluated["distance"]
             n_simulations += 1
 
             if dist <= epsilon:
@@ -627,8 +621,9 @@ class ABCSampler:
                     for i, param in enumerate(self.param_names)
                 ]
                 if all(prob > 0 for prob in prior_probabilities):
-                    simulation = self._run_simulation(perturbed_params)
-                    distance = self.distance_function(self.observed_data, simulation)
+                    evaluated = self._evaluate_particle(perturbed_params)
+                    simulation = evaluated["simulation"]
+                    distance = evaluated["distance"]
                     n_simulations += 1
 
                     if distance < epsilon:
@@ -761,7 +756,7 @@ class ABCSampler:
             # parameters.
             if inject_rng:
                 proj_params["rng"] = rng_i
-            result = self.simulation_function(proj_params)
+            result = _worker.run_projection(self.simulation_function, proj_params)
             projections.append(result)
 
         self.results.projections[scenario_id] = projections
