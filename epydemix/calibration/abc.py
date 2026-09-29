@@ -130,6 +130,7 @@ class ABCSampler:
         - `verbose` (`bool`, default: `True`): Whether to print progress updates.
         - `checkpoint_path`: Optional file saving inputs and each complete generation.
         - `resume`: Restore a trusted checkpoint; default False. Requires checkpoint_path.
+        - `history_storage`: "memory" (default) or "disk" for on-demand generation history.
 
         #### `"rejection"` (ABC Rejection Sampling)
         - `epsilon` (`float`, default: `0.1`): Distance threshold for accepting samples.
@@ -193,6 +194,7 @@ class ABCSampler:
         parallel_strategy: str = "dynamic",
         checkpoint_path: Optional[str] = None,
         resume: bool = False,
+        history_storage: str = "memory",
     ) -> CalibrationResults:
         """
         Run ABC-SMC, optionally saving every complete generation to a checkpoint.
@@ -225,6 +227,10 @@ class ABCSampler:
                 sampler must have matching inputs/settings. RNG state comes from the checkpoint;
                 workers, target generations and total budget may change. Incomplete generations are
                 rerun. Default is False.
+            history_storage (str, optional): "memory" or "disk". Disk mode requires a checkpoint and
+                stores completed generations in checkpoint_path + ".history". Result mappings read
+                individual fields on demand without caching. Keep this directory with the checkpoint;
+                use the same mode when resuming. Default is "memory".
 
         Returns:
             CalibrationResults: Results of the last complete generation and its history. Empty if
@@ -233,7 +239,7 @@ class ABCSampler:
         Raises:
             ValueError: If the options are inconsistent, or the checkpoint does not match this sampler.
             FileExistsError: If checkpoint_path exists and resume is False.
-            FileNotFoundError: If the checkpoint directory is missing.
+            FileNotFoundError: If the checkpoint directory or a history file is missing.
             TypeError: If executor is not a ProcessPoolExecutor, or the inputs cannot be checkpointed.
         """
         scheduler = create_particle_scheduler(parallel_strategy)
@@ -260,6 +266,7 @@ class ABCSampler:
                     scheduler=scheduler,
                     checkpoint_path=checkpoint_path,
                     resume=resume,
+                    history_storage=history_storage,
                 )
         finally:
             # Resume may replace the generator; preserve it even after a failure.

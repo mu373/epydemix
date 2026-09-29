@@ -1,7 +1,7 @@
 """ABC-SMC run lifecycle: generations, stopping, checkpointing and resume.
 
 The caller supplies candidate collection and owns the executor. This module
-owns SMC state and delegates archive I/O to the checkpoint module.
+owns SMC state and delegates archive I/O and disk history to their modules.
 """
 
 import copy
@@ -20,7 +20,7 @@ from ..utils.abc_smc_utils import (
     DefaultPerturbationDiscrete,
     compute_particle_weights,
 )
-from . import _checkpoint
+from . import _checkpoint, _history
 from .calibration_results import CalibrationResults
 
 
@@ -60,6 +60,7 @@ class SMCRun:
         scheduler,
         checkpoint_path,
         resume,
+        history_storage,
     ) -> CalibrationResults:
         """
         Run the ABC-SMC generations inside an already opened worker pool.
@@ -67,7 +68,7 @@ class SMCRun:
         Args:
             num_particles, num_generations, epsilon_schedule, epsilon_quantile_level,
             minimum_epsilon, max_time, total_simulations_budget, perturbations, verbose,
-            checkpoint_path, resume: See `ABCSampler.run_smc`.
+            checkpoint_path, resume, history_storage: See `ABCSampler.run_smc`.
             pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
             scheduler (DynamicParticleScheduler): Scheduler collecting accepted particles.
 
@@ -86,6 +87,15 @@ class SMCRun:
             }
 
         # --- Validate options -------------------------------------------------
+        if history_storage not in ("memory", "disk"):
+            raise ValueError("history_storage must be 'memory' or 'disk'")
+        if history_storage == "disk" and checkpoint_path is None:
+            raise ValueError("history_storage='disk' requires checkpoint_path")
+        history_directory = (
+            Path(str(checkpoint_path) + ".history")
+            if history_storage == "disk"
+            else None
+        )
         if resume and checkpoint_path is None:
             raise ValueError("resume=True requires checkpoint_path")
         # --- Checkpoint setup -------------------------------------------------
@@ -136,6 +146,10 @@ class SMCRun:
                     raise ValueError(
                         "total_simulations_budget is below the saved simulation count"
                     )
+                if metadata.get("history_storage") != history_storage:
+                    raise ValueError("history_storage must match the saved checkpoint")
+                if history_storage == "disk":
+                    _history.bind_history(restored["results"], history_directory)
                 current_environment = _checkpoint.environment()
                 if metadata["environment"] != current_environment:
                     warnings.warn(
@@ -155,6 +169,7 @@ class SMCRun:
             else:
                 metadata = {
                     "strategy": "smc",
+                    "history_storage": history_storage,
                     "run_id": str(uuid4()),
                     "param_names": self.param_names,
                     "num_particles": int(num_particles),
@@ -260,8 +275,15 @@ class SMCRun:
                 "distances": distances,
                 "selected_trajectories": new_gen["simulations"],
             }
-            for name, value in values.items():
-                getattr(results, name)[gen] = value
+            if history_storage == "disk":
+                _history.save_generation(
+                    results, gen, values, history_directory, metadata["environment"]
+                )
+            else:
+                for name, value in values.items():
+                    getattr(results, name)[gen] = value
+            # Disk mode must release trajectory references before the next generation.
+            del values
 
             if verbose:
                 # Print generation information
@@ -310,6 +332,9 @@ class SMCRun:
                     # The first write of a fresh run must not replace a file.
                     overwrite=resume or gen > 0,
                 )
+
+            # In disk mode no result mapping retains these trajectory arrays.
+            del new_gen
 
             # Check stopping conditions between generations
             if _check_stopping_conditions(

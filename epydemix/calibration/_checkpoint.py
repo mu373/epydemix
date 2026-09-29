@@ -277,6 +277,7 @@ def environment():
         Path(__file__),
         Path(__file__).with_name("abc.py"),
         Path(__file__).with_name("_smc.py"),
+        Path(__file__).with_name("_history.py"),
         Path(__file__).with_name("_worker.py"),
         Path(__file__).with_name("parallel.py"),
         Path(__file__).parents[1] / "utils/abc_smc_utils.py",
