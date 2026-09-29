@@ -108,6 +108,10 @@ class ABCSampler:
         and distance evaluation use one thread per loaded BLAS/OpenMP library in both
         sequential and parallel modes, restoring the previous limits afterward.
 
+        Owned calibration pools receive fixed inputs once at startup. Each candidate
+        restores a fresh copy in its worker, preserving isolation of mutable inputs.
+        Caller-owned executors retain their initializer and receive full task inputs.
+
         Set `rng` on ABCSampler to reproduce results across worker counts. Simulation
         functions must use the supplied `parameters["rng"]`; custom perturbations
         must use their supplied rng too. Process workers require picklable functions
@@ -423,8 +427,21 @@ class ABCSampler:
         )
 
     def _calibration_executor(self, n_workers, executor):
-        """Open a validated worker pool for calibration."""
-        return executor_context(n_workers, executor)
+        """
+        Open the worker pool, preloading the inputs shared by every candidate.
+
+        Args:
+            n_workers (int, optional): Number of worker processes, or None for sequential execution.
+            executor (ProcessPoolExecutor, optional): Caller-owned worker pool.
+
+        Returns:
+            ContextManager[Optional[ProcessPoolExecutor]]: See `parallel.executor_context`.
+        """
+        return executor_context(
+            n_workers,
+            executor,
+            particle_context=self._get_particle_inputs(),
+        )
 
     def _get_particle_inputs(self):
         """Return the fixed inputs shared by all candidate evaluations."""

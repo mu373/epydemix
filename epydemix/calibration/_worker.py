@@ -4,9 +4,63 @@ Module-level functions are required for ProcessPoolExecutor serialization
 (closures and lambdas cannot be pickled).
 """
 
+import pickle
 from functools import wraps
 
 from threadpoolctl import threadpool_limits
+
+# Pickled (simulation_function, parameters, param_names, observed_data,
+# distance_function), set once per worker process by the pool initializer.
+_serialized_particle_inputs = None
+
+
+def initialize_particle_worker(path):
+    """
+    Pool initializer that loads the fixed calibration inputs written by the parent process.
+
+    The inputs are kept as pickled bytes and unpickled for every task, so a simulation
+    that mutates its parameters or model cannot leak state into later tasks. This matches
+    the isolation of sending the full arguments with every task.
+
+    Args:
+        path (Path): Pickle file written by `parallel._particle_executor`.
+    """
+    global _serialized_particle_inputs  # noqa: PLW0603 - process-local initializer state
+    _serialized_particle_inputs = path.read_bytes()
+
+
+def evaluate_particle_with_cached_inputs(
+    params, epsilon=None, rng=None, *, inclusive=False
+):
+    """
+    Evaluate a candidate using the inputs cached by `initialize_particle_worker`.
+
+    Only the candidate-specific arguments cross the process boundary.
+
+    Args:
+        params (list): Parameter values, in the order of `param_names`.
+        epsilon (float, optional): Acceptance threshold. Default is None (accept all).
+        rng (np.random.Generator, optional): Candidate-specific generator, injected only for
+            seeded calibration. Default is None.
+        inclusive (bool, optional): Accept equality with epsilon. Default is False.
+
+    Returns:
+        Dict[str, Any]: Same as `evaluate_particle`.
+    """
+    function, parameters, names, observed, distance = pickle.loads(
+        _serialized_particle_inputs
+    )
+    return evaluate_particle(
+        function,
+        parameters,
+        names,
+        params,
+        observed,
+        distance,
+        epsilon,
+        rng,
+        inclusive=inclusive,
+    )
 
 
 def _single_threaded(function):

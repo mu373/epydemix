@@ -14,10 +14,12 @@ import re
 import sys
 import warnings
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from functools import partial
+from multiprocessing.reduction import ForkingPickler
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from . import _worker
 
@@ -280,26 +282,72 @@ class DynamicParticleScheduler:
 
 
 def build_particle_tasks(executor, inputs, candidates, *, inclusive=False):
-    """Lazily encode candidate evaluations for sequential or process execution."""
-    function, parameters, names, observed, distance = inputs
-    arguments = (
-        (function, parameters, names, params, observed, distance, epsilon, rng)
-        for params, epsilon, rng in candidates
-    )
-    return partial(_worker.evaluate_particle, inclusive=inclusive), arguments
+    """Select an evaluator and lazily encode candidate arguments for the pool.
+
+    Owned calibration pools cache fixed inputs. Sequential evaluation and
+    caller-owned pools receive the full inputs for each candidate instead.
+    Candidates always supply (parameter values, epsilon, RNG).
+    The calibration strategy chooses whether equality with epsilon is accepted.
+    """
+    if getattr(executor, "_initializer", None) is _worker.initialize_particle_worker:
+        evaluate, arguments = _worker.evaluate_particle_with_cached_inputs, candidates
+    else:
+        function, parameters, names, observed, distance = inputs
+        evaluate = _worker.evaluate_particle
+        arguments = (
+            (function, parameters, names, params, observed, distance, epsilon, rng)
+            for params, epsilon, rng in candidates
+        )
+    return partial(evaluate, inclusive=inclusive), arguments
 
 
-def executor_context(n_workers=None, executor=None):
+@contextmanager
+def _particle_executor(n_workers, context):
+    """
+    Create a worker pool whose workers load the fixed calibration inputs once.
+
+    The inputs are pickled to a temporary file and each worker reads it at startup
+    (see `_worker.initialize_particle_worker`), so each task only carries the
+    candidate-specific arguments. The file is removed when the pool is closed.
+
+    Args:
+        n_workers (int): Number of worker processes.
+        context (tuple): Fixed inputs `(simulation_function, parameters, param_names,
+            observed_data, distance_function)`.
+
+    Yields:
+        ProcessPoolExecutor: The initialized pool, shut down on exit.
+    """
+    # Large spawn initargs block process startup on pipe writes. Pass only a path.
+    with TemporaryDirectory(prefix="epydemix-workers-") as directory:
+        path = Path(directory) / "inputs.pkl"
+        with path.open("wb") as file:
+            ForkingPickler(file).dump(context)
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            initializer=_worker.initialize_particle_worker,
+            initargs=(path,),
+        ) as pool:
+            yield pool
+
+
+def executor_context(n_workers=None, executor=None, *, particle_context=None):
     """
     Validate the requested parallelism and return a context manager for the worker pool.
 
     Pools created here are shut down (and their workers joined) on exit; a
     caller-provided executor is validated and left open.
 
+    Owned calibration pools receive a fixed input snapshot once at worker startup.
+    Caller-owned pools keep their initializer and use ordinary task arguments.
+
     Args:
         n_workers (int, optional): Number of worker processes to start, or None to run
             sequentially. Ignored when `executor` is given. Default is None.
         executor (ProcessPoolExecutor, optional): Caller-owned worker pool. Default is None.
+        particle_context (tuple, optional): Fixed inputs `(simulation_function, parameters,
+            param_names, observed_data, distance_function)` to preload into owned workers.
+            Default is None.
 
     Returns:
         ContextManager[Optional[ProcessPoolExecutor]]: Yields the pool, or None for sequential execution.
@@ -330,6 +378,8 @@ def executor_context(n_workers=None, executor=None):
         )
     if executor is not None:
         return nullcontext(executor)
+    if particle_context is not None:
+        return _particle_executor(requested, particle_context)
     return ProcessPoolExecutor(max_workers=requested)
 
 
