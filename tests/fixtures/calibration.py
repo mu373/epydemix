@@ -1,5 +1,7 @@
 """Importable calibration models and assertions shared by tests and spawned workers."""
 
+from time import sleep
+
 import numpy as np
 from pandas.testing import assert_frame_equal
 from scipy import stats
@@ -24,6 +26,40 @@ def make_seeded_sampler(seed, source):
         parameters={"rng": value} if source.startswith("parameters") else {},
         observed_data=np.arange(8) / 3,
         rng=value if source.startswith("argument") else None,
+    )
+
+
+def runtime_skewed_simulate(parameters):
+    """Return theta squared, with a sign-dependent delay and no epidemic simulation.
+
+    Opposite signs of the same magnitude give identical outputs but different
+    runtimes. Sleeping does not consume RNG draws or change the model output.
+    """
+    theta = parameters["theta"]
+    delay = (
+        parameters["slow_delay"]
+        if theta * parameters["slow_sign"] > 0
+        else parameters["fast_delay"]
+    )
+    if delay:
+        sleep(delay)
+    return {"data": np.array([theta**2])}
+
+
+def make_runtime_skewed_sampler(seed, slow_sign=1, fast_delay=0.0001, slow_delay=0.002):
+    """Build a symmetric two-mode ABC target with parameter-dependent runtimes.
+
+    With theta uniform on [-2, 2] and observation 1, the squared-parameter model
+    gives equal target mass near -1 and +1 for the test thresholds. slow_sign=1
+    delays the positive side; -1 delays the negative side. Zero delays provide
+    the same model for a sequential reference without artificial waiting.
+    """
+    return ABCSampler(
+        runtime_skewed_simulate,
+        {"theta": stats.uniform(-2, 4)},
+        {"slow_sign": slow_sign, "fast_delay": fast_delay, "slow_delay": slow_delay},
+        np.array([1.0]),
+        rng=seed,
     )
 
 
