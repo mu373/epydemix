@@ -31,6 +31,10 @@ class ABCSampler:
     ):
         """Initialize ABC calibration.
 
+        Candidates use independent random streams derived from the sampler RNG.
+        This changes seeded outputs from earlier versions. Seeded simulations and
+        custom perturbations must use their supplied RNG for reproducibility.
+
         Args:
             rng: Optional seed or ``np.random.Generator`` making calibration
                 reproducible. It governs all ABC randomness (prior sampling,
@@ -352,10 +356,12 @@ class ABCSampler:
         root_rng=None,
     ):
         """
-        Yield prior or perturbed candidates using the sampler's existing RNG.
+        Yield candidates with independent RNG streams, in submission order.
 
-        Proposal retries and simulation draws advance the same generator, preserving
-        the sequential random stream used before candidate collection was extracted.
+        Only one fixed-size draw advances the root RNG per generation/batch. Proposal
+        retries and simulation draws affect only that candidate's child stream, so
+        candidate k gets the same stream regardless of the number of workers or the
+        order in which they finish.
 
         Args:
             epsilon (float, optional): Acceptance threshold passed to the worker. Default is None (accept all).
@@ -366,15 +372,18 @@ class ABCSampler:
             perturbations (Dict[str, Perturbation], optional): Perturbation kernel per parameter.
                 Default is None.
             deadline (datetime, optional): Stop yielding after this time. Default is None.
-            root_rng (np.random.Generator, optional): Random source. Defaults to
+            root_rng (np.random.Generator, optional): Generation seed source. Defaults to
                 self.rng; SMC supplies its current generator.
 
         Yields:
             tuple: Candidate parameter values, acceptance threshold and simulation RNG.
         """
         root_rng = self.rng if root_rng is None else root_rng
+        seeds = np.random.SeedSequence(
+            root_rng.integers(0, 2**32, size=4, dtype=np.uint32)
+        )
         while deadline is None or datetime.now() < deadline:
-            rng = root_rng
+            rng = np.random.default_rng(seeds.spawn(1)[0])
             if particles is None:
                 params = sample_prior(self.priors, self.param_names, rng)
             else:
