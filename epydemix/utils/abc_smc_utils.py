@@ -19,7 +19,7 @@ class Perturbation(ABC):
     def propose(self, x, rng=None):
         """Propose a new value from the current value ``x``.
 
-        Draw randomness from ``rng`` (a seed or ``np.random.Generator``) so that proposals are reproducible
+        Draw randomness from ``rng`` (a seed or ``np.random.Generator``) so that proposals are reproducible.
         """
         pass
 
@@ -56,7 +56,12 @@ class DefaultPerturbationContinuous(Perturbation):
         """Update the standard deviation based on previous generation variance."""
         index = param_names.index(self.param_name)
         values = particles[:, index]
-        std = np.std(values)
+        with np.errstate(invalid="ignore"):
+            std = np.std(values)
+        if not np.isfinite(std) or std <= 0:
+            raise ValueError(
+                f"Parameter {self.param_name} needs positive finite variance for a Gaussian perturbation"
+            )
         self.std = std * np.sqrt(2)
 
 
@@ -92,14 +97,98 @@ class DefaultPerturbationDiscrete(Perturbation):
 
 
 def sample_prior(priors, param_names, rng=None):
-    """Samples a parameter set from the given prior distributions.
-    priors: dictionary mapping parameter names to scipy.stats distributions
-    param_names: list of parameter names to maintain consistent order
-    rng: optional np.random.Generator (or seed) used for sampling
-    Returns: list of sampled parameter values in the order of param_names
+    """
+    Sample a parameter set from the given prior distributions.
+
+    Args:
+        priors (dict): Mapping from parameter names to scipy.stats distribution objects.
+        param_names (list[str]): List of parameter names maintaining consistent order.
+        rng (int or np.random.Generator, optional): Seed or NumPy random Generator used for sampling.
+
+    Returns:
+        list: Sampled parameter values in the order of ``param_names``.
     """
     rng = np.random.default_rng(rng)
     return [priors[param].rvs(random_state=rng) for param in param_names]
+
+
+def compute_particle_weights(
+    particles, previous_particles, previous_weights, priors, param_names, perturbations
+):
+    """
+    Compute normalized ABC-SMC importance weights without changing inputs.
+
+    Rows of both particle arrays follow ``param_names``. If ``previous_particles``
+    is None, the candidates were drawn from the prior and receive uniform weights.
+    Otherwise, divide the joint prior density by the previous weighted kernel
+    mixture. Kernels must already be updated for the previous generation.
+
+    Args:
+        particles (np.ndarray): 2D array of accepted particles for the current generation.
+        previous_particles (np.ndarray or None): 2D array of particles from the previous
+            generation, or None for generation 0.
+        previous_weights (np.ndarray or None): 1D array of normalized weights from the
+            previous generation, or None for generation 0.
+        priors (dict): Mapping from parameter names to prior distributions.
+        param_names (list[str]): Parameter names matching particle columns.
+        perturbations (dict): Mapping from parameter names to perturbation kernels.
+
+    Returns:
+        np.ndarray: 1D array of normalized importance weights summing to 1.
+
+    Raises:
+        ValueError: If a particle has a nonpositive or nonfinite kernel mixture density,
+            or if the computed weights do not have a positive finite sum.
+    """
+    continuous_params = {name for name in param_names if hasattr(priors[name], "pdf")}
+    # Generation 0 samples the prior, so all weights are equal. Later
+    # generations use the ABC-SMC importance weight
+    #   w_i = prior(theta_i) / sum_j w_j * K(theta_i | theta_j),
+    # where K is the product of the per-parameter perturbation kernels.
+    # These inputs are plain lists: call the same multiplication reduction used
+    # by np.prod directly, avoiding its dispatch wrapper in the quadratic loop.
+    new_weights = np.ones(len(particles))
+    if previous_particles is not None:
+        for i, params in enumerate(particles):
+            numerator = np.multiply.reduce(
+                [
+                    priors[p].pdf(params[k])
+                    if p in continuous_params
+                    else priors[p].pmf(params[k])
+                    for k, p in enumerate(param_names)
+                ],
+                axis=None,
+            )
+            denominator = np.sum(
+                [
+                    previous_weights[j]
+                    * np.multiply.reduce(
+                        [
+                            perturbations[p].pdf(params[k], previous_particles[j, k])
+                            for k, p in enumerate(param_names)
+                        ],
+                        axis=None,
+                    )
+                    for j in range(len(previous_particles))
+                ]
+            )
+            if not np.isfinite(denominator) or denominator <= 0:
+                raise ValueError(
+                    f"Particle {i} has a nonpositive or nonfinite kernel mixture density"
+                )
+            new_weights[i] = numerator / denominator
+    total = new_weights.sum()
+    if (
+        not np.all(np.isfinite(new_weights))
+        or np.any(new_weights < 0)
+        or not np.isfinite(total)
+        or total <= 0
+    ):
+        raise ValueError(
+            "Importance weights need a positive finite sum and finite nonnegative values"
+        )
+    new_weights /= total
+    return new_weights
 
 
 def compute_effective_sample_size(weights: np.ndarray) -> float:
