@@ -4,7 +4,9 @@ from datetime import datetime
 from functools import partial
 from itertools import islice
 
-from ._proposals import generate_candidates
+import numpy as np
+
+from ._proposals import ProposalSequence
 
 
 def run_particle_evaluations(
@@ -65,11 +67,11 @@ def run_particle_evaluations(
     ):
         return {"accepted_results": [], "n_simulations": 0}
 
-    # Propose parameters using the existing shared RNG
-    candidates = generate_candidates(
+    # Prepare proposals with one root RNG draw per generation or batch
+    candidates = ProposalSequence(
         priors,
-        inputs[2],
-        root_rng,
+        inputs[2],  # Parameter names, in the order expected by the evaluator
+        root_rng.integers(0, 2**32, size=4, dtype=np.uint32),
         seed_requested,
         epsilon,
         particles,
@@ -140,7 +142,7 @@ def evaluate_particle(
         distance_function (Callable): Function `(data, simulation) -> float`.
         epsilon (float, optional): Acceptance threshold. If provided, only accepted results
             include simulation data (saves serialization cost). Default is None.
-        rng (np.random.Generator, optional): Random generator, injected only for
+        rng (np.random.Generator, optional): Candidate-specific generator, injected only for
             seeded calibration. Default is None.
         inclusive (bool, optional): Accept equality with epsilon. Default is False.
 

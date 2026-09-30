@@ -8,7 +8,7 @@ import pytest
 from scipy import stats
 
 from epydemix.calibration.abc import ABCSampler
-from tests.fixtures.calibration import make_seeded_sampler
+from tests.fixtures.calibration import assert_exact_calibration, make_seeded_sampler
 
 
 def _mock_simulate(params):
@@ -132,6 +132,54 @@ def test_smc_cumulative_sim_count():
     )
     # Should have completed 2 generations
     assert len(results.posterior_distributions) == 2
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "argument-int",
+        "argument-generator",
+        "parameters-int",
+        "parameters-generator",
+    ],
+)
+@pytest.mark.parametrize(
+    "strategy, options",
+    [
+        ("smc", dict(num_particles=9, num_generations=3)),
+        ("rejection", dict(num_particles=9, epsilon=1.0)),
+        ("top_fraction", dict(Nsim=25, top_fraction=0.4)),
+    ],
+)
+def test_seed_repeats_and_changes(source, strategy, options):
+    """Check repeated seeds match exactly and different seeds change the result."""
+
+    def calibrate(seed):
+        return make_seeded_sampler(seed, source).calibrate(
+            strategy=strategy,
+            verbose=False,
+            **options,
+        )
+
+    reference = calibrate(43)
+    assert not reference.get_posterior_distribution().equals(
+        calibrate(44).get_posterior_distribution()
+    )
+    for _ in range(2):
+        assert_exact_calibration(reference, calibrate(43))
+
+
+def _unseeded_simulate(params):
+    """Reject unexpected RNG injection and return a constant trajectory."""
+    assert "rng" not in params
+    return {"data": np.zeros(8)}
+
+
+def test_unseeded_simulation_receives_no_rng():
+    """Check that unseeded calibration does not inject an RNG into the simulation."""
+    ABCSampler(
+        _unseeded_simulate, {"beta": stats.uniform()}, {}, np.zeros(8)
+    ).calibrate(strategy="top_fraction", Nsim=4, verbose=False)
 
 
 @pytest.mark.parametrize(
