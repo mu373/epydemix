@@ -75,3 +75,25 @@ rejection, and is `fixed` for top-fraction execution.
 Timing and physical surplus can vary with logging and OS scheduling. Retained
 posterior and RNG parity are verified without binding wall-time/budget cutoffs.
 Detailed transport/worker/memory profiles remain validation-only measurements.
+
+## Checkpoint calls and resume
+
+`checkpoint_saved` follows a successful atomic publication; `checkpoint_resumed`
+follows compatibility checks and RNG restoration. Both include `checkpoint_path`
+and `checkpoint_id`, so a resumed invocation can be traced to its archive.
+`previous_run_id` identifies the last call that successfully saved it.
+
+Each call keeps its own logging `run_id`, duration and metrics. The archive's
+legacy `metadata.run_id` is a stable checkpoint-chain identity; its `call_run_id`
+identifies the latest saving invocation. The cumulative committed count is
+reported separately as `resumed_committed_simulations`. An incomplete generation
+contributes physical work to its current invocation's metrics, but is rerun from
+the previous committed state on resume. A completed-target resume can therefore
+return historical particles while reporting zero new simulations.
+
+`checkpoint_setup_seconds` includes copying/hashing inputs and validating resume.
+`checkpoint_io_seconds` includes archive read/verification/deserialization and
+write/serialization. Generation entries contain their own save time; a resumed
+run's aggregate also includes its initial read. Generation duration includes save
+time. The archive's legacy cumulative `elapsed_seconds` remains separate from the
+current invocation's duration.
