@@ -17,7 +17,7 @@ class CalibrationResults:
         selected_trajectories: Dictionary of selected trajectories per generation
         observed_data: Observed data used for calibration
         priors: Dictionary of prior distributions for parameters
-        calibration_params: Dictionary of parameters used in calibration
+        calibration_params: Calibration metadata, including execution_metrics for this call.
         distances: Dictionary of distances per generation
         weights: Dictionary of weights per generation
         projections: Dictionary of projections

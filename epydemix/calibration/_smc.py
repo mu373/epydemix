@@ -3,12 +3,15 @@
 The caller supplies the executor; generations use shared particle evaluation.
 """
 
+import logging
 from datetime import datetime, timedelta
+from time import perf_counter
 from typing import Optional
 
 import numpy as np
 import pandas as pd
 
+from .. import _logging
 from ..utils.abc_smc_utils import (
     DefaultPerturbationContinuous,
     DefaultPerturbationDiscrete,
@@ -16,6 +19,12 @@ from ..utils.abc_smc_utils import (
 )
 from . import _evaluate
 from .calibration_results import CalibrationResults
+
+_STOP_MESSAGES = {
+    "minimum_epsilon": "Minimum epsilon reached",
+    "deadline": "Maximum time reached",
+    "budget": "Total simulations budget reached",
+}
 
 
 class SMCRun:
@@ -25,7 +34,7 @@ class SMCRun:
     caller's model and observations; workers restore isolated snapshots.
     """
 
-    def __init__(self, particle_inputs, priors, rng, seed_requested):
+    def __init__(self, particle_inputs, priors, rng, seed_requested, *, metrics):
         self.particle_inputs = particle_inputs
         (
             self.simulation_function,
@@ -37,6 +46,7 @@ class SMCRun:
         self.priors = priors
         self.rng = rng
         self.seed_requested = seed_requested
+        self.metrics = metrics
 
     def execute(
         self,
@@ -90,6 +100,9 @@ class SMCRun:
         )
         particles = weights = distances = None
         for gen in range(num_generations):
+            self.generation = gen
+            self.verbose = verbose
+            generation_started = perf_counter()
             start_generation_time = datetime.now()
 
             if epsilon_schedule is not None:
@@ -127,6 +140,14 @@ class SMCRun:
                 n_simulations,
             )
             if new_gen is None:
+                self._record_generation(generation_started)
+                self.metrics["stop_reason"] = self.last_generation["stop_reason"]
+                if verbose:
+                    print(
+                        f"\tEvaluated {self.last_generation['simulations']}, "
+                        f"Matched {self.last_generation['matched']}, Retained 0 "
+                        f"(stopped: {self.last_generation['stop_reason']})"
+                    )
                 if verbose:
                     print(
                         "Maximum time or budget reached during generation 0"
@@ -156,25 +177,42 @@ class SMCRun:
                 elapsed_time = end_generation_time - start_generation_time
                 formatted_time = f"{elapsed_time.seconds // 3600:02}:{(elapsed_time.seconds % 3600) // 60:02}:{elapsed_time.seconds % 60:02}"
                 acceptance_rate = (
-                    len(new_gen["particles"]) / new_gen["n_simulations"] * 100
+                    self.last_generation["matched"]
+                    / max(self.last_generation["simulations"], 1)
+                    * 100
                 )
                 print(
-                    f"\tAccepted {len(new_gen['particles'])}/{new_gen['n_simulations']} (acceptance rate: {acceptance_rate:.2f}%)"
+                    f"\tAccepted {len(new_gen['particles'])}/{self.last_generation['simulations']} (acceptance rate: {acceptance_rate:.2f}%), "
+                    f"Matched {self.last_generation['matched']}, Drained {self.last_generation['drained']}"
                 )
                 print(f"\tElapsed time: {formatted_time}")
 
-            # Check stopping conditions between generations
-            if _check_stopping_conditions(
+            self._record_generation(generation_started)
+
+            # Diagnose the same boundaries without conflating per-generation counts.
+            reason = _stopping_reason(
                 epsilon,
                 minimum_epsilon,
                 start_time,
                 max_time,
                 n_simulations,
                 total_simulations_budget,
-            ):
+            )
+            if reason is not None:
+                self.metrics["stop_reason"] = reason
+                if verbose:
+                    print(_STOP_MESSAGES[reason])
                 break
 
         return results
+
+    def _record_generation(self, started):
+        """Publish completed or discarded generation work after result construction."""
+        self.last_generation["generation_seconds"] = perf_counter() - started
+        self.metrics["generations"].append(self.last_generation)
+        _logging.emit(
+            "generation_finished", run_id=self.metrics["run_id"], **self.last_generation
+        )
 
     def _run_generation(
         self,
@@ -214,6 +252,30 @@ class SMCRun:
                 "simulations" and "n_simulations" (cumulative total), or None if a time/budget
                 limit stopped the generation before num_particles were accepted.
         """
+        collected_at = perf_counter()
+        last_report = 0
+        last_reported_at = collected_at
+
+        def progress(completed, matched):
+            nonlocal last_report, last_reported_at
+            now = perf_counter()
+            if completed > last_report and now - last_reported_at >= 1.0:
+                last_report = completed
+                last_reported_at = now
+                retained = min(matched, num_particles)
+                if self.verbose:
+                    print(
+                        f"\tSimulations: {completed}, Matched: {matched}, Collected: {retained}"
+                    )
+                _logging.emit(
+                    "progress",
+                    run_id=self.metrics["run_id"],
+                    generation=self.generation,
+                    simulations=completed,
+                    matched=matched,
+                    collected=retained,
+                )
+
         # Prepare and evaluate candidates for this generation
         result = _evaluate.run_particle_evaluations(
             self.particle_inputs,
@@ -232,13 +294,30 @@ class SMCRun:
             weights=weights,
             perturbations=perturbations,
             inclusive=particles is None,
+            progress=progress
+            if self.verbose or _logging.logger.isEnabledFor(logging.INFO)
+            else None,
         )
         accepted = result["accepted_results"]
+        self.last_generation = {
+            "generation": self.generation,
+            "epsilon": float(epsilon),
+            "completed": len(accepted) == num_particles,
+            "simulations": result["n_simulations"],
+            "matched": result["n_matched"],
+            "retained": 0,
+            "surplus_accepted": max(0, result["n_matched"] - num_particles),
+            "drained": result["n_drained"],
+            "collection_seconds": perf_counter() - collected_at,
+            "weights_seconds": 0.0,
+            "stop_reason": result["stop_reason"],
+        }
         # Discard incomplete generations
         if len(accepted) < num_particles:
             return None
         new_particles = np.array([r["params"] for r in accepted])
         # Compute particle weights
+        weights_started = perf_counter()
         new_weights = compute_particle_weights(
             new_particles,
             particles,
@@ -247,6 +326,8 @@ class SMCRun:
             self.param_names,
             perturbations,
         )
+        self.last_generation["weights_seconds"] = perf_counter() - weights_started
+        self.last_generation["retained"] = len(new_particles)
         return {
             "particles": new_particles,
             "weights": new_weights,
@@ -281,23 +362,39 @@ def _check_stopping_conditions(
     Returns:
         bool: True if any stopping condition is met, False otherwise
     """
+    reason = _stopping_reason(
+        epsilon,
+        minimum_epsilon,
+        start_time,
+        max_time,
+        n_simulations,
+        total_simulations_budget,
+    )
+    if reason is not None and verbose:
+        print(_STOP_MESSAGES[reason])
+    return reason is not None
+
+
+def _stopping_reason(
+    epsilon,
+    minimum_epsilon,
+    start_time,
+    max_time,
+    n_simulations,
+    total_simulations_budget,
+):
+    """Describe the first stopping boundary without printing or changing its meaning."""
     if (
         minimum_epsilon is not None
         and epsilon is not None
         and epsilon < minimum_epsilon
     ):
-        if verbose:
-            print("Minimum epsilon reached")
-        return True
+        return "minimum_epsilon"
     if max_time is not None and datetime.now() - start_time >= max_time:
-        if verbose:
-            print("Maximum time reached")
-        return True
+        return "deadline"
     if (
         total_simulations_budget is not None
         and n_simulations >= total_simulations_budget
     ):
-        if verbose:
-            print("Total simulations budget reached")
-        return True
-    return False
+        return "budget"
+    return None
