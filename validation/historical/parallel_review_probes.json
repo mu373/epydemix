@@ -1,0 +1,61 @@
+[
+  {
+    "phase": "result",
+    "error": "RuntimeError",
+    "message": "intentional simulation error",
+    "seconds": 0.533643068978563,
+    "live_children": [],
+    "stored_results": false,
+    "case": "error"
+  },
+  {
+    "phase": "result",
+    "error": "BrokenProcessPool",
+    "message": "A process in the process pool was terminated abruptly while the future was running or pending.",
+    "seconds": 0.022016610018908978,
+    "live_children": [],
+    "stored_results": false,
+    "case": "crash"
+  },
+  {
+    "external_timeout": true,
+    "blocked_seconds": 5.141799801029265,
+    "max_time_seconds": 0.05,
+    "case": "hang"
+  },
+  {
+    "phase": "result",
+    "accepted": 3,
+    "seconds": 0.5259391639847308,
+    "live_children": [],
+    "stored_results": true,
+    "case": "deadline"
+  },
+  {
+    "phase": "result",
+    "error": "AttributeError",
+    "message": "Can't get local object 'fault.<locals>.<lambda>'",
+    "seconds": 0.028082346078008413,
+    "live_children": [],
+    "stored_results": false,
+    "case": "pickle"
+  },
+  {
+    "phase": "result",
+    "matches_serial": [
+      false,
+      true
+    ],
+    "different_parameters_give_identical_trajectories": true,
+    "case": "shared_state"
+  },
+  {
+    "phase": "result",
+    "workers": 2,
+    "tasks_submitted_before_any_completion": 4,
+    "case": "batch_queue",
+    "peak_window": 4,
+    "ordered_results": 256,
+    "stage": "after bounded-batch fix"
+  }
+]

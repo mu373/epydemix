@@ -1,0 +1,42 @@
+[
+  {
+    "storage": "memory",
+    "generations": 4,
+    "trajectory_data_mib": 64,
+    "rss_before_mib": 265.58984375,
+    "rss_after_mib": 395.21875,
+    "peak_rss_mib": 395.21875,
+    "checkpoint_mib": 64.01702499389648,
+    "history_mib": 0.0
+  },
+  {
+    "storage": "disk",
+    "generations": 4,
+    "trajectory_data_mib": 64,
+    "rss_before_mib": 265.74609375,
+    "rss_after_mib": 266.6875,
+    "peak_rss_mib": 281.86328125,
+    "checkpoint_mib": 0.014911651611328125,
+    "history_mib": 64.02642059326172
+  },
+  {
+    "storage": "memory",
+    "generations": 16,
+    "trajectory_data_mib": 256,
+    "rss_before_mib": 265.6484375,
+    "rss_after_mib": 780.26171875,
+    "peak_rss_mib": 780.26171875,
+    "checkpoint_mib": 256.0295820236206,
+    "history_mib": 0.0
+  },
+  {
+    "storage": "disk",
+    "generations": 16,
+    "trajectory_data_mib": 256,
+    "rss_before_mib": 266.01953125,
+    "rss_after_mib": 267.0,
+    "peak_rss_mib": 283.08203125,
+    "checkpoint_mib": 0.02155780792236328,
+    "history_mib": 256.1056823730469
+  }
+]
