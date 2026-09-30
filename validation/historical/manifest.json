@@ -122,5 +122,27 @@
       "file": "worker_cpu_probe.jsonl",
       "sha256": "6a9f2e40bf77d0a629b32ef8a96a46abdf86f70edc2d0c9bae984531b95bfca9"
     }
+  ],
+  "additional_profile_archives": [
+    {
+      "file": "profile-before-cache-selection-fix-dispatch-profile.jsonl",
+      "sha256": "c743ce3fa08b70a5439ab6db59566d392663f7618d90d2e3b7ab4d54b9dda7a6"
+    },
+    {
+      "file": "profile-before-cache-selection-fix-large-dispatch-profile.jsonl",
+      "sha256": "8a257cb072896e31273049bc2eef023e0725af2f7248874ac6af8942732d293f"
+    },
+    {
+      "file": "profile-before-cache-selection-fix-profile-fixed-smoke.jsonl",
+      "sha256": "20e325f8359612f132dc570cca499a069a1930a0f3675c8757a70592efaddf24"
+    },
+    {
+      "file": "profile-before-cache-selection-fix-profile-reused-smoke.jsonl",
+      "sha256": "b3c18e147118aba0b25752296523878dc5f78af391894009eeba4b35f91c7338"
+    },
+    {
+      "file": "profile-before-cache-selection-fix-profile-smoke.jsonl",
+      "sha256": "8b793db64d76219c62420dac5f9c3d255b1970e55666a46454e2ee0b3898eea3"
+    }
   ]
 }
