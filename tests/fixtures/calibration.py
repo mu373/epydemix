@@ -7,6 +7,49 @@ from pandas.testing import assert_frame_equal
 from scipy import stats
 
 from epydemix.calibration.abc import ABCSampler
+from epydemix.model import simulate
+from epydemix.model.predefined_models import create_sir
+from epydemix.population import Population
+
+
+def deterministic(parameters):
+    """Return a linear trajectory scaled by the transmission rate."""
+    return {"data": parameters["transmission_rate"] * np.arange(10)}
+
+
+def stochastic(parameters):
+    """Return susceptible-to-infected transition counts from a stochastic SIR model."""
+    return {"data": simulate(**parameters).transitions["Susceptible_to_Infected_total"]}
+
+
+def make_sampler(model, seed=43, seed_source="rng"):
+    """Build a deterministic or SIR sampler seeded via the argument or parameters."""
+    parameters = {}
+    if model == "sir":
+        epimodel = create_sir(transmission_rate=0.3, recovery_rate=0.1)
+        population = Population()
+        population.add_population([10000])
+        population.add_contact_matrix(np.array([[1.0]]))
+        epimodel.set_population(population)
+        parameters = dict(
+            epimodel=epimodel,
+            start_date="2023-01-01",
+            end_date="2023-01-10",
+            initial_conditions_dict={
+                "Susceptible": np.array([9900]),
+                "Infected": np.array([100]),
+                "Recovered": np.array([0]),
+            },
+        )
+    if seed_source == "parameters":
+        parameters["rng"] = seed
+    return ABCSampler(
+        simulation_function=stochastic if model == "sir" else deterministic,
+        priors={"transmission_rate": stats.uniform(0.1, 0.4)},
+        parameters=parameters,
+        observed_data=np.arange(10, dtype=float),
+        rng=seed if seed_source == "rng" else None,
+    )
 
 
 def _noisy_simulate(params):
