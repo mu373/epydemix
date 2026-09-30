@@ -1,0 +1,126 @@
+{
+  "snapshot_checkout_commit": "28b6678",
+  "note": "Snapshot of prior reports/results, including untracked reports. Generation commits are only known where recorded inside each original file; checkout SHA is not a claim that it generated every result. Commands refer to old implementations/harnesses.",
+  "files": [
+    {
+      "file": "CALIBRATION_SCALING.md",
+      "sha256": "66460601b6d15ea2a5a961e2a8f3fe8b1b2101cf3cb4068ad5a7295d72fb9bcf"
+    },
+    {
+      "file": "CHECKPOINT_MEMORY.md",
+      "sha256": "ed5541f11d9dba4328a22e2d3088a27d8d490506c75328cc24258904cc6d204a"
+    },
+    {
+      "file": "DISK_HISTORY.md",
+      "sha256": "5b1c2fc125f60d3996369b9a6e47c4d860963b50c414100dd47428dd7e15070a"
+    },
+    {
+      "file": "PARALLEL_REVIEW.md",
+      "sha256": "8f20bd1eddae3ce93581e2270ebbf54515169d158442e7b3edf904f4c3b7f155"
+    },
+    {
+      "file": "PARALLEL_SEED_CHECK.md",
+      "sha256": "b40edf342fc0aab225aa5eea22aa14b81df02cb14ddc9a63779af2c0a47b8430"
+    },
+    {
+      "file": "SMC_CHECKPOINT.md",
+      "sha256": "b571081be918802a04f2df5a9379a1335453664c4884f315e02b3e7144c2e571"
+    },
+    {
+      "file": "WORKER_INPUT_CACHE.md",
+      "sha256": "49eeb92e51a2899c41ddc9bdb7afccce95ee49d0a4c543e7677a7a81bd06bcdf"
+    },
+    {
+      "file": "checkpoint_memory_streaming.json",
+      "sha256": "730ff8a5313e1df9c41d4876c5885336738ee27a35ff3626c45157ae3dd22763"
+    },
+    {
+      "file": "dispatch_before_fork.jsonl",
+      "sha256": "2d4e38881abc32a2407f01f0a6d2efabcc9018e9b9ef66c8510ea2b6e3a16077"
+    },
+    {
+      "file": "dispatch_before_spawn.jsonl",
+      "sha256": "c37ed93d20c6e79084c6e685de782ea60838e7035c85512ec26faeb856d299f5"
+    },
+    {
+      "file": "dispatch_comparison.jsonl",
+      "sha256": "3974894f8a73dd1e9672be7d2b4fb6fb911f8edd4d55424f906c07948a2bac2b"
+    },
+    {
+      "file": "dispatch_inline_initializer_fork.jsonl",
+      "sha256": "c1d675994671af2deb47eda2458a3d0b479e7403a55668e6dd4164202528d0ae"
+    },
+    {
+      "file": "dispatch_inline_initializer_partial.jsonl",
+      "sha256": "fe4ee5452690ba0063d19f1fcb28520b604d25806070d1bf501dd30d05fa0b47"
+    },
+    {
+      "file": "dispatch_inline_initializer_spawn.jsonl",
+      "sha256": "b4bd0ee8b221a648e37671acfc31cd3651355bb15e782c21c16bbbfaf6d91d03"
+    },
+    {
+      "file": "dispatch_profile_cached_fork.jsonl",
+      "sha256": "ef7008990014f26d012a2ff55b073f5a4463dffb4beef76d27024568b66c284f"
+    },
+    {
+      "file": "dispatch_profile_cached_spawn.jsonl",
+      "sha256": "c0c5eedbd88102eda97e82a5c0e934f8f0aac55288c37d6f505ba4e575cb5f19"
+    },
+    {
+      "file": "dispatch_profile_full_fork.jsonl",
+      "sha256": "ff25c0e4fcd83df866745581c6d8afb8fb86b1cf57fcb3dbf17970bd9d717fa1"
+    },
+    {
+      "file": "dispatch_profile_full_spawn.jsonl",
+      "sha256": "3252fa2a40aa0ca2e100d18b4b1cc6717734997fc10fae4a26e9a5d50555d883"
+    },
+    {
+      "file": "history_memory.json",
+      "sha256": "a551767a73a03109f3b897a66e77cca1dabdf2ab63d09a584531077aacf967fd"
+    },
+    {
+      "file": "parallel_benchmark_fork.jsonl",
+      "sha256": "445b191efeca118a8c864151fd29da6c88b2daa124999bb1f4bd9d5005ccff27"
+    },
+    {
+      "file": "parallel_benchmark_spawn.jsonl",
+      "sha256": "a6605cb53aadcf8a4a335ce24ce010684dd5068f0e893a97a9da686951995543"
+    },
+    {
+      "file": "parallel_review_probes.json",
+      "sha256": "4cc3e4624cfda477c9c189c3c6ca940355c337da05ab11175a63085d40d9763e"
+    },
+    {
+      "file": "scale_particles.jsonl",
+      "sha256": "9cbed450c0a7c52c2da3a5d996e7007b17796cd4cf38df88fc5ad14effd0b69f"
+    },
+    {
+      "file": "scale_storage_disk_3.jsonl",
+      "sha256": "68d3aee7e90ae0a54abc00a7b2ff89b3d5d3eef5683417258cd37acc915127be"
+    },
+    {
+      "file": "scale_storage_disk_6.jsonl",
+      "sha256": "85a8ef259b35199bfeef46b8afcad29e81920296d40cb0add8e146512996810d"
+    },
+    {
+      "file": "scale_storage_memory_3.jsonl",
+      "sha256": "2c59d4e33702d1c560f5763b644f9e5ab02146b8e11591c07d58fc989bce8895"
+    },
+    {
+      "file": "scale_storage_memory_6.jsonl",
+      "sha256": "c29f67bc4ddabbf2a14d1b68c22e09f9c9c86cca5df6cc4aa138b0f64d655407"
+    },
+    {
+      "file": "scale_workers_fork.jsonl",
+      "sha256": "3441040d139507739e3c76bf7ba3e0b830d077b09d99a007528a0797587c2ab9"
+    },
+    {
+      "file": "scale_workers_spawn.jsonl",
+      "sha256": "65728f714d7e119735d0fa95ba59905a20860bc128444de5c8782281f8d22f61"
+    },
+    {
+      "file": "worker_cpu_probe.jsonl",
+      "sha256": "6a9f2e40bf77d0a629b32ef8a96a46abdf86f70edc2d0c9bae984531b95bfca9"
+    }
+  ]
+}
