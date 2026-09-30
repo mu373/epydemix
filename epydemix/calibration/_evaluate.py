@@ -168,7 +168,7 @@ def build_particle_tasks(executor, inputs, candidates, *, inclusive=False):
 
 
 def evaluate_particle_with_cached_inputs(
-    params, epsilon=None, rng=None, *, inclusive=False
+    sampled_values, epsilon=None, rng=None, *, inclusive=False
 ):
     """
     Evaluate a candidate using the inputs cached by `_worker_inputs.initialize_particle_worker`.
@@ -176,7 +176,7 @@ def evaluate_particle_with_cached_inputs(
     Only the candidate-specific arguments cross the process boundary.
 
     Args:
-        params (list): Parameter values, in the order of `param_names`.
+        sampled_values (list): Parameter values, in the order of `param_names`.
         epsilon (float, optional): Acceptance threshold. Default is None (accept all).
         rng (np.random.Generator, optional): Candidate-specific generator, injected only for
             seeded calibration. Default is None.
@@ -186,14 +186,14 @@ def evaluate_particle_with_cached_inputs(
         Dict[str, Any]: Same as `evaluate_particle`.
     """
     # Restore fresh model inputs for this candidate
-    function, parameters, names, observed, distance = (
+    function, fixed_parameters, names, observed, distance = (
         _worker_inputs.restore_worker_inputs()
     )
     return evaluate_particle(
         function,
-        parameters,
+        fixed_parameters,
         names,
-        params,
+        sampled_values,
         observed,
         distance,
         epsilon,
@@ -205,9 +205,9 @@ def evaluate_particle_with_cached_inputs(
 @single_threaded
 def evaluate_particle(
     simulation_function,
-    parameters,
+    fixed_parameters,
     param_names,
-    params,
+    sampled_values,
     observed_data,
     distance_function,
     epsilon=None,
@@ -220,9 +220,9 @@ def evaluate_particle(
 
     Args:
         simulation_function (Callable): Function running the simulation model.
-        parameters (Dict[str, Any]): Fixed parameters passed to the simulation.
+        fixed_parameters (Dict[str, Any]): Fixed parameter values passed to the simulation.
         param_names (List[str]): Names of the calibrated parameters.
-        params (list): Parameter values, in the order of `param_names`.
+        sampled_values (list): Parameter values, in the order of `param_names`.
         observed_data (Dict[str, Any]): Observed data used for the distance computation.
         distance_function (Callable): Function `(data, simulation) -> float`.
         epsilon (float, optional): Acceptance threshold. If provided, only accepted results
@@ -239,8 +239,8 @@ def evaluate_particle(
         ValueError: If the simulation does not return a dictionary.
     """
     # Combine fixed parameters with the sampled parameter values
-    full_params = {**parameters, **dict(zip(param_names, params))}
-    # A supplied Generator overrides any seed in parameters, avoiding a reset
+    full_params = {**fixed_parameters, **dict(zip(param_names, sampled_values))}
+    # A supplied Generator overrides any seed in fixed_parameters, avoiding a reset
     # to the same integer seed for every simulation. Unseeded calls inject nothing.
     if rng is not None:
         full_params["rng"] = rng
@@ -262,7 +262,7 @@ def evaluate_particle(
         distance <= epsilon if inclusive else distance < epsilon
     )
     return {
-        "params": params,
+        "params": sampled_values,
         "distance": distance,
         "simulation": simulation if accepted else None,
         "accepted": accepted,
