@@ -78,3 +78,7 @@ synthetic audit complements exact SMC resume and atomic-write tests. The 8 MiB
 smoke report is in `results/checkpoint-streaming-smoke.jsonl`; its save/load/copy
 fingerprints match. It records a pre-commit source plus the exact dirty diff and
 benchmark SHA, and does not establish performance scaling.
+
+Repeated 32 MiB streaming measurements and their scopes are documented in
+[CHECKPOINT_MEMORY.md](CHECKPOINT_MEMORY.md); see
+[SMC_CHECKPOINT.md](SMC_CHECKPOINT.md) for per-call IDs, restore and failure semantics.
