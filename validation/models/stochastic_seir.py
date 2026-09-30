@@ -1,3 +1,11 @@
+"""Independent binomial epidemic reference for validation comparisons.
+
+Use the supplied seed/Generator; global NumPy random state is never consumed.
+Trajectories cover the full configured grid, including extinction. Ensemble
+trials use independent child streams so their identity does not depend on Nsim.
+These are small comparison models, not calibration correctness oracles.
+"""
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -28,15 +36,19 @@ class StochasticSEIR:
         self.N = population
         self.time_steps = time_steps
 
-    def simulate(self):
+    def simulate(self, rng=None):
         """
         Runs a single simulation of the SEIR model for the defined number of time steps.
+
+        Args:
+            rng (int, SeedSequence or Generator, optional): Source of all random draws.
 
         Returns:
             results (dict): A dictionary with keys 'S', 'E', 'I', 'R' containing lists of population sizes
                             at each time step for susceptible, exposed, infected, and recovered compartments.
         """
         # Initialize the compartments
+        rng = np.random.default_rng(rng)
         S = self.S0
         E = self.E0
         I = self.I0
@@ -50,18 +62,15 @@ class StochasticSEIR:
             results["I"].append(I)
             results["R"].append(R)
 
-            if I == 0 and E == 0:  # Stop if no more infected or exposed individuals
-                break
-
             # Probabilities for new infections, new exposures, and recoveries
             infection_prob = 1 - np.exp(-self.beta * I / self.N)
             incubation_prob = 1 - np.exp(-self.sigma)
             recovery_prob = 1 - np.exp(-self.gamma)
 
             # New exposures, new infections, and recoveries based on binomial distributions
-            new_exposures = np.random.binomial(S, infection_prob)
-            new_infections = np.random.binomial(E, incubation_prob)
-            new_recoveries = np.random.binomial(I, recovery_prob)
+            new_exposures = rng.binomial(S, infection_prob)
+            new_infections = rng.binomial(E, incubation_prob)
+            new_recoveries = rng.binomial(I, recovery_prob)
 
             # Update compartments
             S -= new_exposures
@@ -71,12 +80,13 @@ class StochasticSEIR:
 
         return results
 
-    def run_simulations(self, Nsim, quantiles=[0.25, 0.5, 0.75]):
+    def run_simulations(self, Nsim, quantiles=(0.25, 0.5, 0.75), rng=None):
         """
         Runs the SEIR model simulation Nsim times and computes the specified quantiles.
 
         Args:
             Nsim (int): The number of simulations to run.
+            rng (int or Generator, optional): Seed for independent child trial streams.
             quantiles (list of float): A list of quantiles to compute (e.g., [0.25, 0.5, 0.75]).
 
         Returns:
@@ -84,29 +94,24 @@ class StochasticSEIR:
                                              and the inner key is the quantile, each containing an array of shape (time_steps).
         """
         # Initialize lists to store all simulation results
+        if Nsim < 1:
+            raise ValueError("Nsim must be positive")
+        rng = np.random.default_rng(rng)
+        children = np.random.SeedSequence(
+            rng.integers(0, 2**32, size=4, dtype=np.uint32)
+        ).spawn(Nsim)
         all_S = []
         all_E = []
         all_I = []
         all_R = []
 
         # Run Nsim simulations and collect results
-        for _ in range(Nsim):
-            results = self.simulate()
+        for child in children:
+            results = self.simulate(rng=child)
             all_S.append(results["S"])
             all_E.append(results["E"])
             all_I.append(results["I"])
             all_R.append(results["R"])
-
-        # Find the longest simulation
-        max_len = max(len(traj) for traj in all_S)
-
-        # Pad the trajectories with the last value to make them all the same length
-        for i in range(Nsim):
-            if len(all_S[i]) < max_len:
-                all_S[i].extend([all_S[i][-1]] * (max_len - len(all_S[i])))
-                all_E[i].extend([all_E[i][-1]] * (max_len - len(all_E[i])))
-                all_I[i].extend([all_I[i][-1]] * (max_len - len(all_I[i])))
-                all_R[i].extend([all_R[i][-1]] * (max_len - len(all_R[i])))
 
         # Convert lists to arrays to compute the quantiles
         all_S = np.array(all_S)
@@ -124,7 +129,7 @@ class StochasticSEIR:
 
         return quantile_results
 
-    def plot(self, quantile_results, quantiles=[0.25, 0.5, 0.75]):
+    def plot(self, quantile_results, quantiles=(0.25, 0.5, 0.75)):
         """
         Plots the quantile trajectories of the SEIR model.
 
