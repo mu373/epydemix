@@ -543,3 +543,35 @@ def test_unsupported_checkpoint_format_is_rejected(tmp_path):
         )
     with pytest.raises(ValueError, match="Unsupported SMC checkpoint format"):
         _checkpoint.read_checkpoint(path)
+
+
+@pytest.mark.parametrize("dtype", [np.longdouble, np.clongdouble])
+@pytest.mark.parametrize("container", ["scalar", "array", "strided"])
+def test_extended_float_input_hash_survives_pickle(dtype, container):
+    """Checkpoint fingerprints describe numeric inputs, excluding padding bytes.
+
+    Extended floats may store 80 meaningful bits in 128-bit slots, and NumPy scalar
+    copies/pickle reconstruction can change the unused bytes. Preserve dtype, shape,
+    signed zero and full precision while allowing equivalent round trips; the adjacent
+    representable value must still change the fingerprint. This also covers Windows,
+    where longdouble precision depends on the NumPy build.
+    """
+    import pickle
+
+    from epydemix.calibration._checkpoint import input_hash
+
+    value = dtype("2.0000000000000000002")
+    data = (
+        value if container == "scalar" else np.array([value, value, -0.0], dtype=dtype)
+    )
+    if container == "strided":
+        data = data[::2]
+    fingerprint = input_hash(data)
+    for _ in range(5):
+        data = pickle.loads(pickle.dumps(data, protocol=5))
+        assert input_hash(data) == fingerprint
+    adjacent = np.nextafter(np.longdouble(value.real), np.longdouble(np.inf))
+    changed = dtype(adjacent) if container == "scalar" else data.copy()
+    if container != "scalar":
+        changed.flat[0] = adjacent
+    assert input_hash(changed) != fingerprint

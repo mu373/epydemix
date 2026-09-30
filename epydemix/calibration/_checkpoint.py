@@ -45,7 +45,15 @@ def _array_digest(array):
         str: Hex SHA-256 digest of the array data.
     """
     digest = hashlib.sha256()
-    if array.size and array.flags.c_contiguous:
+    if array.dtype.type in (np.longdouble, np.clongdouble):
+        # Extended floats can contain padding bytes that change on scalar copies
+        # or pickle round trips. Hash round-trip decimal values, retaining precision.
+        for value in array.flat:
+            parts = (value.real, value.imag) if array.dtype.kind == "c" else (value,)
+            for part in parts:
+                digest.update(np.format_float_scientific(part, unique=True).encode())
+                digest.update(b"\n")
+    elif array.size and array.flags.c_contiguous:
         digest.update(memoryview(array).cast("B"))
     elif array.size:
         for chunk in np.nditer(
