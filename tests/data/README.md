@@ -16,3 +16,14 @@ The generator is an explicit maintenance command, never called by pytest. A pure
 refactor must retain this snapshot. An intentional RNG change must first fail the
 old reference, then update only affected outputs and document the source commit.
 The mathematical/public-API contract tests do not require this pinned environment.
+
+## Candidate RNG redesign
+
+The old golden failed at the indexed-RNG change, as intended. The active reference
+was explicitly regenerated from `9b084b37ab398d63e6e55618556ad79b9c038c1a`; the unchanged baseline is
+preserved as `abc_reference_baseline.json`. Model, seeds, numerical environment,
+mathematical target tests and threshold contracts were not changed. Each batch now
+consumes one four-word root seed and derives candidate streams by index, changing
+particle values, weights, distances, trajectories, projections and parent RNG state.
+
+To regenerate the active snapshot, run the recipe above using this source commit.
