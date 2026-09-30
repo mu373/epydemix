@@ -278,9 +278,13 @@ def environment():
         Path(__file__).with_name("abc.py"),
         Path(__file__).with_name("_smc.py"),
         Path(__file__).with_name("_history.py"),
-        Path(__file__).with_name("_worker.py"),
-        Path(__file__).with_name("parallel.py"),
+        Path(__file__).with_name("_evaluate.py"),
+        Path(__file__).with_name("_worker_inputs.py"),
+        Path(__file__).with_name("_proposals.py"),
+        Path(__file__).with_name("_scheduler.py"),
         Path(__file__).parents[1] / "utils/abc_smc_utils.py",
+        Path(__file__).parents[1] / "_execution.py",
+        Path(__file__).parents[1] / "utils/random_utils.py",
     ):
         source[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
     return {"versions": versions, "source_sha256": source}

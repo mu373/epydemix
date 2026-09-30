@@ -1,17 +1,28 @@
+"""Public API for ABC calibration and posterior projections.
+
+ABCSampler selects the calibration method and connects parameter proposals,
+model evaluation, scheduling, and process-pool management. SMC generation state
+and checkpoint handling are delegated to SMCRun in _smc.
+"""
+
 import copy
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
-from itertools import islice
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-from ..utils.abc_smc_utils import sample_prior
-from . import _smc, _worker
+from .._execution import executor_context, map_tasks
+from ..utils.random_utils import rng_for_index
+from . import _evaluate, _smc, _worker_inputs
+from ._scheduler import (
+    create_particle_scheduler,
+    validate_parallel_strategy,
+)
 from .calibration_results import CalibrationResults
 from .metrics import rmse
-from .parallel import build_particle_tasks, create_particle_scheduler, executor_context
 
 
 class ABCSampler:
@@ -33,7 +44,7 @@ class ABCSampler:
 
         Seeded simulations must use parameters["rng"] and avoid shared mutable
         state. With the same seed and numerical environment, results are identical
-        across worker counts unless a wall-clock deadline cuts the run short.
+        across worker counts and scheduling strategies without binding time or simulation budgets.
         Candidate-specific streams change seeded outputs from earlier versions.
 
         Args:
@@ -95,8 +106,17 @@ class ABCSampler:
 
         ### Execution options (all strategies):
         - `n_workers`: Number of worker processes; None runs in the calling process.
+          Negative values use max(1, available_cpus + 1 + n_workers): -1 uses all
+          available CPUs, -2 uses all but one, etc. Zero is invalid.
         - `executor`: Optional caller-owned ProcessPoolExecutor, taking precedence over n_workers.
-        - `parallel_strategy`: Currently only `"dynamic"` is supported.
+
+        SMC and rejection additionally accept `parallel_strategy="dynamic"` (DYN),
+        currently the only supported acceptance scheduler. Top fraction evaluates
+        a fixed batch and accepts only `n_workers` and `executor` for parallel execution.
+
+        DYN also requires picklable priors and perturbation kernels because
+        proposals run inside workers. Proposal callbacks must use the supplied RNG
+        without hidden state that changes between proposals.
 
         Worker counts exceeding detected logical CPU capacity are rejected, including
         caller-owned executors. Linux affinity and visible cgroup quotas are honored;
@@ -114,7 +134,8 @@ class ABCSampler:
         and parameters. Thread executors are not supported because models can mutate
         shared state. A wall-clock `max_time` cutoff stops new submissions and drains
         submitted work; it may change the returned prefix across worker counts.
-        A `total_simulations_budget` cutoff is independent of worker count.
+        Simulation budgets count actual evaluations, including DYN surplus. A binding
+        cumulative budget may stop DYN at a different SMC generation.
 
         ### Strategy-Specific Arguments:
 
@@ -215,11 +236,13 @@ class ABCSampler:
                 Default is None (default continuous/discrete kernels).
             verbose (bool, optional): Whether to print progress. Default is True.
             n_workers (int, optional): Number of worker processes, at most the detected CPU capacity.
-                None runs in the calling process. Default is None.
+                None runs in the calling process. Negative values use
+                max(1, available_cpus + 1 + n_workers): -1 uses all CPUs, -2 all but one.
+                Zero is invalid. Default is None.
             executor (ProcessPoolExecutor, optional): Caller-owned worker pool, taking precedence
                 over n_workers. Default is None.
-            parallel_strategy (str, optional): Parallel scheduling strategy. Only "dynamic" is supported.
-                Default is "dynamic".
+            parallel_strategy (str, optional): Scheduling strategy. Currently only "dynamic" (DYN) is supported.
+                Default is "dynamic". DYN can perform surplus evaluations.
             checkpoint_path (str or Path, optional): Local snapshot containing inputs, results, RNG and
                 kernels. Requires an explicit seed and picklable, hashable input data. Existing files
                 are rejected unless resume=True. Only load trusted checkpoints. Default is None.
@@ -242,16 +265,22 @@ class ABCSampler:
             FileNotFoundError: If the checkpoint directory or a history file is missing.
             TypeError: If executor is not a ProcessPoolExecutor, or the inputs cannot be checkpointed.
         """
-        scheduler = create_particle_scheduler(parallel_strategy)
+        validate_parallel_strategy(parallel_strategy)
+        # Prepare the SMC run with model inputs, priors, and RNG.
         smc_run = _smc.SMCRun(
             self._get_particle_inputs(),
             self.priors,
             self.rng,
             self._seed_requested,
-            self._sample_particles,
         )
         try:
             with self._calibration_executor(n_workers, executor) as pool:
+                scheduler = (
+                    create_particle_scheduler(parallel_strategy)
+                    if pool is not None
+                    else None
+                )
+                # Run SMC and get CalibrationResults
                 return smc_run.execute(
                     num_particles=num_particles,
                     num_generations=num_generations,
@@ -303,11 +332,13 @@ class ABCSampler:
             progress_update_interval (int, optional): Number of simulations between progress
                 messages. Default is 1000.
             n_workers (int, optional): Number of worker processes, at most the detected CPU capacity.
-                None runs in the calling process. Default is None.
+                None runs in the calling process. Negative values use
+                max(1, available_cpus + 1 + n_workers): -1 uses all CPUs, -2 all but one.
+                Zero is invalid. Default is None.
             executor (ProcessPoolExecutor, optional): Caller-owned worker pool, taking precedence
                 over n_workers. Default is None.
-            parallel_strategy (str, optional): Parallel scheduling strategy. Only "dynamic" is supported.
-                Default is "dynamic".
+            parallel_strategy (str, optional): Scheduling strategy. Currently only "dynamic" (DYN) is supported.
+                Default is "dynamic". DYN can perform surplus evaluations.
 
         Returns:
             CalibrationResults: Accepted particles with uniform weights, stored as generation 0.
@@ -315,7 +346,8 @@ class ABCSampler:
         Raises:
             ValueError: If progress_update_interval is not positive.
         """
-        scheduler = create_particle_scheduler(parallel_strategy)
+        # Validations
+        validate_parallel_strategy(parallel_strategy)
         if progress_update_interval < 1:
             raise ValueError("progress_update_interval must be positive")
         if verbose:
@@ -326,7 +358,7 @@ class ABCSampler:
         last_print = 0
 
         def progress(completed, accepted):
-            # Called by the scheduler after each batch of finished simulations.
+            # Report completed simulations in sequential or parallel execution.
             nonlocal last_print
             if verbose and completed - last_print >= progress_update_interval:
                 last_print = completed
@@ -336,11 +368,21 @@ class ABCSampler:
                 )
 
         with self._calibration_executor(n_workers, executor) as pool:
-            result = self._sample_particles(
-                num_particles,
-                epsilon,
-                pool,
-                scheduler,
+            scheduler = (
+                create_particle_scheduler(parallel_strategy)
+                if pool is not None
+                else None
+            )
+            # Prepare and evaluate candidates until enough are accepted
+            result = _evaluate.run_particle_evaluations(
+                self._get_particle_inputs(),
+                self.priors,
+                self.rng,
+                self._seed_requested,
+                n_accepted=num_particles,
+                epsilon=epsilon,
+                pool=pool,
+                scheduler=scheduler,
                 start_time=datetime.now(),
                 max_time=max_time,
                 total_simulations_budget=total_simulations_budget,
@@ -368,13 +410,13 @@ class ABCSampler:
         verbose: bool = True,
         n_workers: Optional[int] = None,
         executor: Optional[ProcessPoolExecutor] = None,
-        parallel_strategy: str = "dynamic",
     ) -> CalibrationResults:
         """
         Run ABC top fraction selection.
 
-        Runs Nsim simulations from the prior and keeps those whose distance is within
-        the top_fraction quantile.
+        Runs all Nsim simulations from the prior as an independent batch, then keeps
+        those whose distance is within the top_fraction quantile. n_workers or executor
+        controls parallel execution of the batch.
 
         Args:
             top_fraction (float, optional): Fraction of best-fitting simulations to keep, in (0, 1].
@@ -382,11 +424,11 @@ class ABCSampler:
             Nsim (int, optional): Number of simulations to run. Default is 100.
             verbose (bool, optional): Whether to print progress. Default is True.
             n_workers (int, optional): Number of worker processes, at most the detected CPU capacity.
-                None runs in the calling process. Default is None.
+                None runs in the calling process. Negative values use
+                max(1, available_cpus + 1 + n_workers): -1 uses all CPUs, -2 all but one.
+                Zero is invalid. Default is None.
             executor (ProcessPoolExecutor, optional): Caller-owned worker pool, taking precedence
                 over n_workers. Default is None.
-            parallel_strategy (str, optional): Parallel scheduling strategy. Only "dynamic" is supported.
-                Default is "dynamic".
 
         Returns:
             CalibrationResults: Selected particles with uniform weights, stored as generation 0.
@@ -394,7 +436,7 @@ class ABCSampler:
         Raises:
             ValueError: If Nsim is not positive or top_fraction is not in (0, 1].
         """
-        scheduler = create_particle_scheduler(parallel_strategy)
+        # Validations
         if Nsim < 1 or not 0 < top_fraction <= 1:
             raise ValueError("Nsim must be positive and top_fraction must be in (0, 1]")
         if verbose:
@@ -402,11 +444,18 @@ class ABCSampler:
                 f"Starting ABC top fraction selection with {Nsim} simulations "
                 f"and top {top_fraction * 100:.1f}% selected"
             )
+
+        # Evaluate the fixed set of candidates before selecting by distance
         with self._calibration_executor(n_workers, executor) as pool:
-            evaluate, arguments = build_particle_tasks(
-                pool, self._get_particle_inputs(), self._generate_candidates()
+            evaluation = _evaluate.run_particle_evaluations(
+                self._get_particle_inputs(),
+                self.priors,
+                self.rng,
+                self._seed_requested,
+                n_evaluations=Nsim,
+                pool=pool,
             )
-            results = scheduler.run_batch(pool, evaluate, islice(arguments, Nsim))
+        results = evaluation["accepted_results"]
         distances = np.array([r["distance"] for r in results])
         threshold = np.quantile(distances, top_fraction)
         mask = distances <= threshold
@@ -456,22 +505,24 @@ class ABCSampler:
             priors=self.priors,
         )
 
+    @contextmanager
     def _calibration_executor(self, n_workers, executor):
-        """
-        Open the worker pool, preloading the inputs shared by every candidate.
+        """Connect an owned pool to the fixed calibration input snapshot."""
+        if executor is not None or n_workers is None:
+            with executor_context(n_workers, executor) as pool:
+                yield pool
+            return
 
-        Args:
-            n_workers (int, optional): Number of worker processes, or None for sequential execution.
-            executor (ProcessPoolExecutor, optional): Caller-owned worker pool.
-
-        Returns:
-            ContextManager[Optional[ProcessPoolExecutor]]: See `parallel.executor_context`.
-        """
-        return executor_context(
-            n_workers,
-            executor,
-            particle_context=self._get_particle_inputs(),
-        )
+        # Keep the snapshot until all owned workers have stopped
+        with _worker_inputs.worker_input_file() as path:
+            with executor_context(
+                n_workers,
+                initializer=_worker_inputs.initialize_particle_worker,
+                initargs=(path,),
+            ) as pool:
+                # Validate the pool before saving inputs; workers start on submit
+                _worker_inputs.save_worker_inputs(path, self._get_particle_inputs())
+                yield pool
 
     def _get_particle_inputs(self):
         """Return the fixed inputs shared by all candidate evaluations."""
@@ -483,139 +534,6 @@ class ABCSampler:
             self.distance_function,
         )
 
-    def _generate_candidates(
-        self,
-        epsilon=None,
-        particles=None,
-        weights=None,
-        perturbations=None,
-        deadline=None,
-        *,
-        root_rng=None,
-    ):
-        """
-        Yield candidates with independent RNG streams, in submission order.
-
-        Only one fixed-size draw advances the root RNG per generation/batch. Proposal
-        retries and simulation draws affect only that candidate's child stream, so
-        candidate k gets the same stream regardless of the number of workers or the
-        order in which they finish.
-
-        Args:
-            epsilon (float, optional): Acceptance threshold passed to the worker. Default is None (accept all).
-            particles (np.ndarray, optional): Previous generation, one row per particle. If None,
-                candidates are drawn from the prior; otherwise a particle is resampled by weight and
-                perturbed until it has non-zero prior density. Default is None.
-            weights (np.ndarray, optional): Weights of the previous generation. Default is None.
-            perturbations (Dict[str, Perturbation], optional): Perturbation kernel per parameter.
-                Default is None.
-            deadline (datetime, optional): Stop yielding after this time. Default is None.
-            root_rng (np.random.Generator, optional): Generation seed source. Defaults to
-                self.rng; SMC supplies its current generator when resuming.
-
-        Yields:
-            tuple: Candidate parameter values, acceptance threshold and simulation RNG.
-        """
-        root_rng = self.rng if root_rng is None else root_rng
-        seeds = np.random.SeedSequence(
-            root_rng.integers(0, 2**32, size=4, dtype=np.uint32)
-        )
-        while deadline is None or datetime.now() < deadline:
-            rng = np.random.default_rng(seeds.spawn(1)[0])
-            if particles is None:
-                params = sample_prior(self.priors, self.param_names, rng)
-            else:
-                while True:
-                    if deadline is not None and datetime.now() >= deadline:
-                        return
-                    index = rng.choice(len(particles), p=weights / weights.sum())
-                    params = [
-                        perturbations[p].propose(particles[index, i], rng)
-                        for i, p in enumerate(self.param_names)
-                    ]
-                    if all(
-                        (
-                            self.priors[p].pdf(params[i])
-                            if p in self.continuous_params
-                            else self.priors[p].pmf(params[i])
-                        )
-                        > 0
-                        for i, p in enumerate(self.param_names)
-                    ):
-                        break
-            candidate_rng = rng if self._seed_requested else None
-            yield params, epsilon, candidate_rng
-
-    def _sample_particles(
-        self,
-        num_particles,
-        epsilon,
-        pool,
-        scheduler,
-        start_time=None,
-        max_time=None,
-        total_simulations_budget=None,
-        n_simulations=0,
-        particles=None,
-        weights=None,
-        perturbations=None,
-        progress=None,
-        *,
-        root_rng=None,
-        inclusive=False,
-    ):
-        """
-        Evaluate candidates until num_particles are accepted or a limit is reached.
-
-        Shared by rejection sampling and every SMC generation.
-
-        Args:
-            num_particles (int): Number of accepted particles to collect.
-            epsilon (float, optional): Acceptance threshold, or None to accept all.
-            pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
-            scheduler (DynamicParticleScheduler): Scheduler collecting accepted particles.
-            start_time (datetime, optional): Start of the calibration run; required with max_time.
-                Default is None.
-            max_time (timedelta, optional): Time limit measured from start_time. Default is None.
-            total_simulations_budget (int, optional): Maximum number of simulations across the whole
-                run. Default is None.
-            n_simulations (int, optional): Simulations already run in earlier generations. Default is 0.
-            particles (np.ndarray, optional): Previous generation to propose from; None samples the
-                prior. Default is None.
-            weights (np.ndarray, optional): Weights of the previous generation. Default is None.
-            perturbations (Dict[str, Perturbation], optional): Perturbation kernel per parameter.
-                Default is None.
-            progress (Callable[[int, int], None], optional): Progress callback, see
-                `DynamicParticleScheduler.run_until_n_accepted`. Default is None.
-            root_rng (np.random.Generator, optional): Generation seed source. Defaults to self.rng.
-            inclusive (bool, optional): Accept equality with epsilon. Default is False.
-
-        Returns:
-            Dict[str, Any]: See `DynamicParticleScheduler.run_until_n_accepted`; "n_simulations" counts only this call.
-        """
-        deadline = start_time + max_time if max_time is not None else None
-        # Budget left for this call, after simulations of earlier generations.
-        remaining = (
-            total_simulations_budget - n_simulations
-            if total_simulations_budget is not None
-            else None
-        )
-        candidates = self._generate_candidates(
-            epsilon, particles, weights, perturbations, deadline, root_rng=root_rng
-        )
-        evaluate, arguments = build_particle_tasks(
-            pool, self._get_particle_inputs(), candidates, inclusive=inclusive
-        )
-        return scheduler.run_until_n_accepted(
-            pool,
-            evaluate,
-            arguments,
-            n_target=num_particles,
-            max_simulations=remaining,
-            deadline=deadline,
-            progress=progress,
-        )
-
     def run_projections(
         self,
         parameters: Dict[str, Any],
@@ -625,10 +543,12 @@ class ABCSampler:
         rng: Optional[Any] = None,
         n_workers: Optional[int] = None,
         executor: Optional[ProcessPoolExecutor] = None,
-        parallel_strategy: str = "dynamic",
     ) -> CalibrationResults:
         """
         Run projections using parameters sampled from the posterior distribution.
+
+        Run all iterations as independent simulations and return them in input order.
+        n_workers or executor controls parallel execution of this fixed-size batch.
 
         Args:
             parameters: Dictionary of parameters for the projections
@@ -645,15 +565,14 @@ class ABCSampler:
                 projections reproducible). Pass ``rng`` explicitly only to override
                 this, e.g. to draw an independent ensemble from the same calibration.
             n_workers: Number of parallel workers, at most the detected CPU capacity.
-                None for sequential execution. Uses the same CPU/thread limits as calibrate.
+                None for sequential execution. Negative values use
+                max(1, available_cpus + 1 + n_workers): -1 uses all CPUs, -2 all but one.
+                Zero is invalid. Uses the same CPU/thread limits as calibrate.
             executor: User-provided ProcessPoolExecutor (takes precedence over n_workers).
-            parallel_strategy: Parallel scheduling strategy name.
 
         Returns:
             CalibrationResults: A new CalibrationResults object containing the original results plus the new projections
         """
-        scheduler = create_particle_scheduler(parallel_strategy)
-
         with executor_context(n_workers, executor) as pool:
             # Get posterior distribution and weights from specified generation
             posterior = self.results.get_posterior_distribution(generation)
@@ -686,25 +605,26 @@ class ABCSampler:
                 base_seed_seq = base_bit_generator._seed_seq
             posterior_samples = {}
 
-            def arguments():
+            def iter_projection_arguments():
                 for i in range(iterations):
-                    child_seed = np.random.SeedSequence(
-                        base_seed_seq.entropy,
-                        spawn_key=base_seed_seq.spawn_key + (i,),
-                        pool_size=base_seed_seq.pool_size,
-                    )
-                    rng_i = np.random.default_rng(child_seed)
+                    rng_i = rng_for_index(base_seed_seq, i)
                     idx = rng_i.choice(len(posterior), p=weights / weights.sum())
+
+                    # Sample from posterior with index
                     posterior_sample = posterior.iloc[idx]
                     for key, value in posterior_sample.items():
                         posterior_samples.setdefault(key, []).append(value)
                     proj_params = {**parameters, **posterior_sample}
+
                     # Set the trajectory RNG last so it overrides any parameter seed.
                     if inject_rng:
                         proj_params["rng"] = rng_i
                     yield self.simulation_function, proj_params
 
-            projections = scheduler.run_batch(pool, _worker.run_projection, arguments())
+            # Run all projection simulations and preserve their input order
+            projections = map_tasks(
+                pool, _evaluate.simulate_projection, iter_projection_arguments()
+            )
 
             self.results.projections[scenario_id] = projections
             self.results.projection_parameters[scenario_id] = pd.DataFrame(

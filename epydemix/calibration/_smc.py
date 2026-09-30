@@ -1,7 +1,7 @@
 """ABC-SMC run lifecycle: generations, stopping, checkpointing and resume.
 
-The caller supplies candidate collection and owns the executor. This module
-owns SMC state and delegates archive I/O and disk history to their modules.
+This module owns SMC state and calls the shared particle evaluation function.
+The caller supplies the executor; archive I/O and disk history live in their modules.
 """
 
 import copy
@@ -20,19 +20,19 @@ from ..utils.abc_smc_utils import (
     DefaultPerturbationDiscrete,
     compute_particle_weights,
 )
-from . import _checkpoint, _history
+from . import _checkpoint, _evaluate, _history
 from .calibration_results import CalibrationResults
 
 
 class SMCRun:
-    """Execute one SMC call, retaining its current RNG on success or failure.
+    """Manage SMC generations and retain the current RNG on success or failure.
 
-    Fixed inputs are references to the caller's model and data. ``sample_particles``
-    accepts generation parameters and ``root_rng`` and returns accepted candidates
-    plus the number of evaluations. It does not depend on SMC persistence.
+    Each generation uses _evaluate.run_particle_evaluations to evaluate candidates.
+    Fixed inputs are references to the caller's model and data.
     """
 
-    def __init__(self, particle_inputs, priors, rng, seed_requested, sample_particles):
+    def __init__(self, particle_inputs, priors, rng, seed_requested):
+        self.particle_inputs = particle_inputs
         (
             self.simulation_function,
             self.parameters,
@@ -43,7 +43,6 @@ class SMCRun:
         self.priors = priors
         self.rng = rng
         self.seed_requested = seed_requested
-        self.sample_particles = sample_particles
 
     def execute(
         self,
@@ -70,7 +69,7 @@ class SMCRun:
             minimum_epsilon, max_time, total_simulations_budget, perturbations, verbose,
             checkpoint_path, resume, history_storage: See `ABCSampler.run_smc`.
             pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
-            scheduler (DynamicParticleScheduler): Scheduler collecting accepted particles.
+            scheduler: Parallel scheduler, or None for sequential execution.
 
         Returns:
             CalibrationResults: See `ABCSampler.run_smc`.
@@ -227,6 +226,7 @@ class SMCRun:
         for gen in range(first_generation, num_generations):
             start_generation_time = datetime.now()
 
+            # Set the acceptance threshold for this generation
             if epsilon_schedule is not None:
                 epsilon = epsilon_schedule[gen]
             elif gen == 0:
@@ -237,10 +237,12 @@ class SMCRun:
                 print(
                     f"\nGeneration {gen + 1}/{num_generations} (epsilon: {epsilon:.6f})"
                 )
+            # Update perturbation kernels from the previous generation
             if gen > 0:
                 for perturbation in perturbations.values():
                     perturbation.update(particles, weights, self.param_names)
 
+            # Collect particles and compute their weights
             new_gen = self._run_generation(
                 particles,
                 weights,
@@ -436,7 +438,7 @@ class SMCRun:
             num_particles (int): Number of particles to accept.
             perturbations (Dict[str, Perturbation]): Perturbation kernel per parameter.
             pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
-            scheduler (DynamicParticleScheduler): Scheduler collecting accepted particles.
+            scheduler: Parallel scheduler, or None for sequential execution.
             start_time (datetime): Start of the calibration run.
             max_time (timedelta, optional): Time limit measured from start_time.
             total_simulations_budget (int, optional): Maximum number of simulations across the whole run.
@@ -447,25 +449,31 @@ class SMCRun:
                 "simulations" and "n_simulations" (cumulative total), or None if a time/budget
                 limit stopped the generation before num_particles were accepted.
         """
-        result = self.sample_particles(
-            num_particles,
-            epsilon,
-            pool,
-            scheduler,
-            start_time,
-            max_time,
-            total_simulations_budget,
-            n_simulations,
-            particles,
-            weights,
-            perturbations,
-            root_rng=self.rng,
+        # Prepare and evaluate candidates for this generation
+        result = _evaluate.run_particle_evaluations(
+            self.particle_inputs,
+            self.priors,
+            self.rng,
+            self.seed_requested,
+            n_accepted=num_particles,
+            epsilon=epsilon,
+            pool=pool,
+            scheduler=scheduler,
+            start_time=start_time,
+            max_time=max_time,
+            total_simulations_budget=total_simulations_budget,
+            n_simulations=n_simulations,
+            particles=particles,
+            weights=weights,
+            perturbations=perturbations,
             inclusive=particles is None,
         )
         accepted = result["accepted_results"]
+        # Discard incomplete generations
         if len(accepted) < num_particles:
             return None
         new_particles = np.array([r["params"] for r in accepted])
+        # Compute particle weights
         new_weights = compute_particle_weights(
             new_particles,
             particles,

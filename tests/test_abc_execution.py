@@ -11,10 +11,11 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from epydemix.calibration.abc import ABCSampler
-from epydemix.calibration.parallel import (
+from epydemix import _execution
+from epydemix._execution import (
     _get_available_cpu_count,
 )
+from epydemix.calibration.abc import ABCSampler
 from tests.fixtures.calibration import (
     make_seeded_sampler,
 )
@@ -47,14 +48,18 @@ def basic_abc_sampler():
 class TestSMCParallel:
     """Smoke-test SMC output; exact parity is checked by TestParallelEquivalence."""
 
-    def test_smc_parallel_basic(self, basic_abc_sampler):
+    @pytest.mark.parametrize("workers", [min(2, _CPU_CAPACITY), -1, -3, -6])
+    def test_smc_parallel_basic(self, basic_abc_sampler, workers, monkeypatch):
         """Produce complete SMC generations using the available process capacity."""
+        monkeypatch.setattr(
+            _execution, "_get_available_cpu_count", lambda: min(2, _CPU_CAPACITY)
+        )
         results = basic_abc_sampler.calibrate(
             strategy="smc",
             num_particles=10,
             num_generations=2,
             verbose=False,
-            n_workers=min(2, _CPU_CAPACITY),
+            n_workers=workers,
             parallel_strategy="dynamic",
         )
         assert len(results.posterior_distributions) == 2
@@ -67,14 +72,18 @@ class TestSMCParallel:
 class TestRejectionParallel:
     """Smoke-test rejection output; exact parity is checked by TestParallelEquivalence."""
 
-    def test_rejection_parallel_basic(self, basic_abc_sampler):
+    @pytest.mark.parametrize("workers", [min(2, _CPU_CAPACITY), -1, -3, -6])
+    def test_rejection_parallel_basic(self, basic_abc_sampler, workers, monkeypatch):
         """Produce the requested rejection sample using the available process capacity."""
+        monkeypatch.setattr(
+            _execution, "_get_available_cpu_count", lambda: min(2, _CPU_CAPACITY)
+        )
         results = basic_abc_sampler.calibrate(
             strategy="rejection",
             epsilon=100.0,
             num_particles=10,
             verbose=False,
-            n_workers=min(2, _CPU_CAPACITY),
+            n_workers=workers,
             parallel_strategy="dynamic",
         )
         assert len(results.posterior_distributions) == 1
@@ -87,15 +96,18 @@ class TestRejectionParallel:
 class TestTopFractionParallel:
     """Smoke-test top-fraction output; exact parity is checked by TestParallelEquivalence."""
 
-    def test_top_fraction_parallel_basic(self, basic_abc_sampler):
+    @pytest.mark.parametrize("workers", [min(2, _CPU_CAPACITY), -1, -3, -6])
+    def test_top_fraction_parallel_basic(self, basic_abc_sampler, workers, monkeypatch):
         """Select posterior samples from a fixed batch evaluated in a process pool."""
+        monkeypatch.setattr(
+            _execution, "_get_available_cpu_count", lambda: min(2, _CPU_CAPACITY)
+        )
         results = basic_abc_sampler.calibrate(
             strategy="top_fraction",
             top_fraction=0.5,
             Nsim=20,
             verbose=False,
-            n_workers=min(2, _CPU_CAPACITY),
-            parallel_strategy="dynamic",
+            n_workers=workers,
         )
         assert len(results.posterior_distributions) == 1
         posterior = results.posterior_distributions[0]
@@ -106,8 +118,12 @@ class TestTopFractionParallel:
 class TestProjectionsParallel:
     """Smoke-test projections; exact parity is checked by TestParallelEquivalence."""
 
-    def test_projections_parallel_basic(self, basic_abc_sampler):
+    @pytest.mark.parametrize("workers", [min(2, _CPU_CAPACITY), -1, -3, -6])
+    def test_projections_parallel_basic(self, basic_abc_sampler, workers, monkeypatch):
         """Produce the requested projection trajectories using a process pool."""
+        monkeypatch.setattr(
+            _execution, "_get_available_cpu_count", lambda: min(2, _CPU_CAPACITY)
+        )
         # First calibrate
         basic_abc_sampler.calibrate(
             strategy="rejection",
@@ -119,32 +135,41 @@ class TestProjectionsParallel:
         results = basic_abc_sampler.run_projections(
             parameters={"dt": 0.1},
             iterations=10,
-            n_workers=min(2, _CPU_CAPACITY),
-            parallel_strategy="dynamic",
+            n_workers=workers,
         )
         assert "baseline" in results.projections
         assert len(results.projections["baseline"]) == 10
 
 
-class TestSequentialFallback:
+class TestSequentialExecution:
     """Check calibration with no worker pool requested."""
 
-    def test_no_workers_runs_sequentially(self, basic_abc_sampler):
-        """Produce the requested sample when no worker pool is requested."""
-        results = basic_abc_sampler.calibrate(
-            strategy="rejection",
-            epsilon=100.0,
-            num_particles=10,
-            verbose=False,
-        )
-        posterior = results.posterior_distributions[0]
+    @pytest.mark.parametrize(
+        "strategy, options",
+        [("smc", {"num_generations": 2}), ("rejection", {"epsilon": 100.0})],
+    )
+    def test_no_workers_runs_sequentially(self, basic_abc_sampler, strategy, options):
+        """Sequential calibration must not construct or enter a DYN scheduler."""
+        with patch(
+            "epydemix.calibration._scheduler.DynamicScheduler",
+            side_effect=AssertionError("Sequential calibration must not use DYN"),
+        ):
+            results = basic_abc_sampler.calibrate(
+                strategy=strategy,
+                num_particles=10,
+                verbose=False,
+                **options,
+            )
+        posterior = results.get_posterior_distribution()
         assert len(posterior) == 10
 
 
 class TestInvalidStrategy:
     """Check validation of the scheduler strategy name."""
 
-    @pytest.mark.parametrize("parallel_strategy", ["dyn", "nonexistent"])
+    @pytest.mark.parametrize(
+        "parallel_strategy", ["dyn", "nonexistent", "static", "non_speculative"]
+    )
     def test_invalid_parallel_strategy_raises(
         self, basic_abc_sampler, parallel_strategy
     ):
@@ -234,21 +259,14 @@ class TestCumulativeSimCount:
     """n_simulations should accumulate across SMC generations."""
 
     @pytest.mark.parametrize("n_workers", [None, 1, 2, 4])
-    def test_smc_cumulative_sim_count(self, n_workers):
+    def test_smc_cumulative_sim_count(self, n_workers, tmp_path):
         """Verify n_simulations accumulates rather than resetting each generation."""
         if n_workers is not None and n_workers > _CPU_CAPACITY:
             pytest.skip("Insufficient CPU capacity for this worker count")
-        priors = {
-            "beta": stats.uniform(0.1, 0.5),
-            "gamma": stats.uniform(0.05, 0.2),
-        }
-        sampler = ABCSampler(
-            simulation_function=_mock_simulate,
-            priors=priors,
-            parameters={"dt": 0.1},
-            observed_data=np.array([90, 82, 75, 68, 62, 57, 52, 48, 44, 40]),
-        )
-        # Exactly two generations fit, irrespective of queue size or completion order.
+        sampler = make_seeded_sampler(43, "argument-int")
+        sampler.simulation_function = _recorded_simulate
+        sampler.parameters["record_dir"] = str(tmp_path)
+        # DYN surplus may leave too little budget to complete generation 1.
         results = sampler.calibrate(
             strategy="smc",
             num_particles=5,
@@ -258,8 +276,10 @@ class TestCumulativeSimCount:
             verbose=False,
             n_workers=n_workers,
         )
-        # Should have completed 2 generations
-        assert len(results.posterior_distributions) == 2
+        assert len(list(tmp_path.iterdir())) == 10
+        assert len(results.posterior_distributions) in (1, 2)
+        if n_workers in (None, 1):
+            assert len(results.posterior_distributions) == 2
 
 
 def _recorded_simulate(params):
@@ -382,3 +402,68 @@ def test_distance_callback_and_upstream_boundary_rules(mode, strategy):
     assert len(result.get_posterior_distribution()) == (
         0 if strategy == "rejection" else 3
     )
+
+
+@pytest.mark.parametrize("method", ["top_fraction", "projections"])
+def test_fixed_batches_reject_acceptance_strategy(basic_abc_sampler, method):
+    """Fixed simulation counts do not accept an ABC acceptance-scheduler option."""
+    with pytest.raises(TypeError, match="parallel_strategy"):
+        if method == "projections":
+            basic_abc_sampler.run_projections({}, parallel_strategy="dynamic")
+        else:
+            basic_abc_sampler.calibrate(
+                strategy="top_fraction", parallel_strategy="dynamic"
+            )
+
+
+@pytest.mark.parametrize(
+    "counts, completed, accepted",
+    [({"n_accepted": 2}, 6, 2), ({"n_evaluations": 5}, 5, 1)],
+)
+def test_shared_evaluation_stops_on_acceptances_or_evaluations(
+    counts, completed, accepted
+):
+    """Fixed counts must include rejected evaluations; acceptance targets retry."""
+    from epydemix.calibration._evaluate import run_particle_evaluations
+
+    calls, progress = [], []
+
+    def simulate(params):
+        calls.append(params["theta"])
+        return {"data": len(calls) % 3}
+
+    def distance(data, simulation):
+        return simulation["data"]
+
+    result = run_particle_evaluations(
+        (simulate, {}, ["theta"], None, distance),
+        {"theta": stats.uniform()},
+        np.random.default_rng(43),
+        True,
+        epsilon=0.5,
+        progress=lambda done, kept: progress.append((done, kept)),
+        **counts,
+    )
+    assert len(calls) == result["n_simulations"] == completed
+    assert len(result["accepted_results"]) == accepted
+    assert all(item["accepted"] for item in result["accepted_results"])
+    assert progress[-1] == (completed, accepted)
+
+
+@pytest.mark.parametrize(
+    "counts, message",
+    [
+        ({}, "exactly one"),
+        ({"n_accepted": 1, "n_evaluations": 1}, "exactly one"),
+        ({"n_accepted": 0}, "positive"),
+        ({"n_evaluations": 0}, "positive"),
+    ],
+)
+def test_shared_evaluation_rejects_invalid_counts_before_rng_advances(counts, message):
+    from epydemix.calibration._evaluate import run_particle_evaluations
+
+    rng = np.random.default_rng(43)
+    state = rng.bit_generator.state
+    with pytest.raises(ValueError, match=message):
+        run_particle_evaluations(None, None, rng, True, **counts)
+    assert rng.bit_generator.state == state

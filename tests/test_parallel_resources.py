@@ -10,7 +10,8 @@ import pytest
 from scipy import stats
 from threadpoolctl import threadpool_info, threadpool_limits
 
-from epydemix.calibration import _worker, parallel
+from epydemix import _execution
+from epydemix.calibration import _evaluate
 from epydemix.calibration.abc import ABCSampler
 
 
@@ -35,10 +36,10 @@ def _fake_cgroup(monkeypatch, tmp_path, kind, group, mount_root="/"):
         )
 
     monkeypatch.setattr(Path, "read_text", read)
-    monkeypatch.setattr(parallel.os, "cpu_count", lambda: 16)
-    monkeypatch.setattr(parallel.os, "process_cpu_count", lambda: 16, raising=False)
+    monkeypatch.setattr(_execution.os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(_execution.os, "process_cpu_count", lambda: 16, raising=False)
     monkeypatch.setattr(
-        parallel.os, "sched_getaffinity", lambda pid: set(range(8)), raising=False
+        _execution.os, "sched_getaffinity", lambda pid: set(range(8)), raising=False
     )
     return mount
 
@@ -63,9 +64,9 @@ def test_cpu_capacity_includes_parent_quota(
         else:
             (directory / "cpu.cfs_quota_us").write_text(str(limit))
             (directory / "cpu.cfs_period_us").write_text("100000")
-    assert parallel._get_available_cpu_count() == expected
-    monkeypatch.setattr(parallel.os, "sched_getaffinity", lambda pid: {4})
-    assert parallel._get_available_cpu_count() == 1
+    assert _execution._get_available_cpu_count() == expected
+    monkeypatch.setattr(_execution.os, "sched_getaffinity", lambda pid: {4})
+    assert _execution._get_available_cpu_count() == 1
 
 
 @pytest.mark.parametrize("group, root", [("/tenant/job", "/tenant"), ("/", "/tenant")])
@@ -73,7 +74,7 @@ def test_cgroup_subtree_and_namespace_mounts(monkeypatch, tmp_path, group, root)
     """Read CPU quotas from subtree mounts and namespaced cgroup roots."""
     mount = _fake_cgroup(monkeypatch, tmp_path, "cgroup2", group, root)
     (mount / "cpu.max").write_text("200000 100000")
-    assert list(parallel._iter_cgroup_cpu_quotas()) == [2]
+    assert list(_execution._iter_cgroup_cpu_quotas()) == [2]
 
 
 @pytest.mark.skipif(
@@ -85,9 +86,9 @@ def test_unreadable_limits_fail_conservatively(monkeypatch):
     def unreadable():
         raise PermissionError("CPU quota hidden")
 
-    monkeypatch.setattr(parallel, "_iter_cgroup_cpu_quotas", unreadable)
+    monkeypatch.setattr(_execution, "_iter_cgroup_cpu_quotas", unreadable)
     with pytest.warns(RuntimeWarning, match="allowing one worker"):
-        assert parallel._get_available_cpu_count() == 1
+        assert _execution._get_available_cpu_count() == 1
 
 
 @pytest.mark.parametrize(
@@ -98,7 +99,7 @@ def test_oversized_pool_rejected_before_rng_or_submission(
     monkeypatch, strategy, external
 ):
     """Reject pools above CPU capacity before task submission or RNG advancement."""
-    monkeypatch.setattr(parallel, "_get_available_cpu_count", lambda: 2)
+    monkeypatch.setattr(_execution, "_get_available_cpu_count", lambda: 2)
     sampler = ABCSampler(
         _native_simulate, {"beta": stats.uniform()}, {}, np.zeros(1), rng=43
     )
@@ -118,11 +119,33 @@ def test_oversized_pool_rejected_before_rng_or_submission(
     assert sampler.rng.bit_generator.state == state
 
 
-@pytest.mark.parametrize("value", [0, -1, True, 1.5, "2"])
+@pytest.mark.parametrize("value", [0, True, False, 1.5, "2"])
 def test_invalid_worker_counts(value):
-    """Reject non-positive, Boolean, and non-integer worker counts."""
+    """Reject zero, Boolean, and non-integer worker counts."""
     with pytest.raises((ValueError, TypeError)):
-        parallel.executor_context(n_workers=value)
+        _execution.executor_context(n_workers=value)
+
+
+@pytest.mark.parametrize(
+    "capacity, requested, expected",
+    [
+        (8, -1, 8),
+        (8, -2, 7),
+        (8, -3, 6),
+        (8, -6, 3),
+        (4, -6, 1),
+        (1, -1, 1),
+        (8, np.int64(-3), 6),
+    ],
+)
+def test_negative_worker_counts_resolve_against_cpu_capacity(
+    monkeypatch, capacity, requested, expected
+):
+    """Resolve relative counts using detected capacity, with a floor of one."""
+    monkeypatch.setattr(_execution, "_get_available_cpu_count", lambda: capacity)
+    # No submissions: inspect the pool size without starting worker processes.
+    with _execution.executor_context(n_workers=requested) as pool:
+        assert pool._max_workers == expected
 
 
 def _thread_counts():
@@ -151,16 +174,24 @@ def test_native_limits_apply_and_restore_in_spawn_pool_and_sequential():
         before = _thread_counts()
         assert before and set(before) == {2}
         with pytest.raises(RuntimeError, match="simulation failed"):
-            _worker.run_projection(_native_simulate, {"fail": True})
+            _evaluate.simulate_projection(_native_simulate, {"fail": True})
         assert _thread_counts() == before
         with ProcessPoolExecutor(
             max_workers=1, mp_context=get_context("spawn"), initializer=_set_two_threads
         ) as pool:
-            with parallel.executor_context(n_workers=999, executor=pool) as reused:
+            for requested in (-1, -6):
+                with _execution.executor_context(
+                    n_workers=requested, executor=pool
+                ) as reused:
+                    assert reused is pool
+                    assert reused._max_workers == 1
+            with _execution.executor_context(n_workers=999, executor=pool) as reused:
                 assert reused is pool
-                pool.submit(_worker.run_projection, _native_simulate, {}).result()
+                pool.submit(
+                    _evaluate.simulate_projection, _native_simulate, {}
+                ).result()
                 result = pool.submit(
-                    _worker.evaluate_particle,
+                    _evaluate.evaluate_particle,
                     _native_simulate,
                     {},
                     [],
@@ -171,9 +202,9 @@ def test_native_limits_apply_and_restore_in_spawn_pool_and_sequential():
                 assert result["accepted"]
                 with pytest.raises(RuntimeError, match="simulation failed"):
                     pool.submit(
-                        _worker.run_projection, _native_simulate, {"fail": True}
+                        _evaluate.simulate_projection, _native_simulate, {"fail": True}
                     ).result()
             assert set(pool.submit(_thread_counts).result()) == {2}
         assert _thread_counts() == before
-    with parallel.executor_context(n_workers=1) as pool:
-        pool.submit(_worker.run_projection, _native_simulate, {}).result()
+    with _execution.executor_context(n_workers=1) as pool:
+        pool.submit(_evaluate.simulate_projection, _native_simulate, {}).result()

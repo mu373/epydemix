@@ -12,8 +12,8 @@ import pandas as pd
 import pytest
 from scipy import stats
 
-from epydemix.calibration import _checkpoint, _worker
-from epydemix.calibration.parallel import _get_available_cpu_count
+from epydemix._execution import _get_available_cpu_count
+from epydemix.calibration import _checkpoint, _evaluate
 from epydemix.utils.abc_smc_utils import DefaultPerturbationContinuous
 from tests.fixtures.calibration import (
     assert_exact_calibration,
@@ -258,10 +258,10 @@ def test_existing_file_and_no_complete_generation(tmp_path):
 
 
 def test_simulation_failure_leaves_replayable_complete_generation(tmp_path):
-    from epydemix.calibration import _worker
+    from epydemix.calibration import _evaluate
 
     path = tmp_path / "run.checkpoint"
-    original = _worker.evaluate_particle
+    original = _evaluate.evaluate_particle
     count = 0
 
     def fail_mid_generation(*args, **kwargs):
@@ -271,7 +271,7 @@ def test_simulation_failure_leaves_replayable_complete_generation(tmp_path):
             raise RuntimeError("interrupted simulation")
         return original(*args, **kwargs)
 
-    with patch.object(_worker, "evaluate_particle", side_effect=fail_mid_generation):
+    with patch.object(_evaluate, "evaluate_particle", side_effect=fail_mid_generation):
         with pytest.raises(RuntimeError, match="interrupted simulation"):
             _run(make_sampler("sir"), checkpoint_path=path)
     state, _ = _checkpoint.read_checkpoint(path)
@@ -398,7 +398,7 @@ def test_resumed_rng_returns_to_sampler_on_every_exit(tmp_path, outcome):
     else:
         original = path.read_bytes()
         with patch.object(
-            _worker, "evaluate_particle", side_effect=RuntimeError("failed")
+            _evaluate, "evaluate_particle", side_effect=RuntimeError("failed")
         ):
             with pytest.raises(RuntimeError, match="failed"):
                 resumed.calibrate(**options)

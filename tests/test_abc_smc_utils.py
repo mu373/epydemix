@@ -207,3 +207,47 @@ def test_particle_weights_match_mixed_prior_kernel_mixture(param_names):
     np.testing.assert_allclose(actual, expected / expected.sum(), rtol=1e-14)
     for value, snapshot in zip((particles, previous, previous_weights), snapshots):
         np.testing.assert_array_equal(value, snapshot)
+
+
+@pytest.mark.parametrize("dimensions", [1, 3, 8, 17])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.longdouble])
+def test_particle_weights_preserve_scalar_product_rounding(dimensions, dtype):
+    """Match the original np.prod formula exactly, including custom scalar dtypes.
+
+    Faster product dispatch must retain the reduction order and precision: an
+    altered weight can change parent selection and every later seeded generation.
+    """
+    rng = np.random.default_rng(43)
+    names = [f"p{i}" for i in range(dimensions)]
+    priors = {name: stats.norm() for name in names}
+
+    class Kernel:
+        def pdf(self, x, center):
+            return dtype(np.exp(-0.5 * (x - center) ** 2))
+
+    kernels = {name: Kernel() for name in names}
+    particles = rng.normal(size=(7, dimensions))
+    previous = rng.normal(size=(11, dimensions))
+    previous_weights = rng.random(11)
+    previous_weights /= previous_weights.sum()
+    expected = np.ones(len(particles))
+    for i, params in enumerate(particles):
+        numerator = np.prod([priors[p].pdf(params[k]) for k, p in enumerate(names)])
+        denominator = np.sum(
+            [
+                previous_weights[j]
+                * np.prod(
+                    [
+                        kernels[p].pdf(params[k], previous[j, k])
+                        for k, p in enumerate(names)
+                    ]
+                )
+                for j in range(len(previous))
+            ]
+        )
+        expected[i] = numerator / denominator
+    expected /= expected.sum()
+    actual = compute_particle_weights(
+        particles, previous, previous_weights, priors, names, kernels
+    )
+    np.testing.assert_array_equal(actual, expected)

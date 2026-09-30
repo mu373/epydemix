@@ -65,7 +65,7 @@ def test_fixed_worker_snapshot_serialized_once_and_isolates_mutation(
     import multiprocessing as mp
     import tempfile
 
-    from epydemix.calibration import parallel
+    from epydemix.calibration import _worker_inputs
 
     if start_method not in mp.get_all_start_methods():
         pytest.skip("Start method unavailable")
@@ -77,7 +77,7 @@ def test_fixed_worker_snapshot_serialized_once_and_isolates_mutation(
 
     monkeypatch.setattr(ProcessPoolExecutor, "__init__", initialize_with_context)
     monkeypatch.setattr(
-        parallel,
+        _worker_inputs,
         "TemporaryDirectory",
         lambda **kwargs: tempfile.TemporaryDirectory(dir=tmp_path, **kwargs),
     )
@@ -113,10 +113,37 @@ def test_fixed_worker_snapshot_serialized_once_and_isolates_mutation(
     with ProcessPoolExecutor(max_workers=1) as pool:
         reference = external.calibrate(executor=pool, **options)
         assert pool.submit(int, "7").result() == 7
-    assert len(path.read_text().splitlines()) == 12
+    # DYN serializes the caller-owned job once per generation.
+    assert len(path.read_text().splitlines()) == 2
     assert_exact_calibration(reference, result)
     assert external.rng.bit_generator.state == cached.rng.bit_generator.state
     cached.parameters["fail"] = True
     with pytest.raises(RuntimeError, match="expected worker failure"):
         cached.calibrate(n_workers=1, **options)
     assert not list(tmp_path.glob("epydemix-workers-*"))
+
+
+def test_worker_retries_restore_mutable_model_inputs(tmp_path):
+    """Reset callbacks, nested inputs and observations on every local retry."""
+
+    def sampler():
+        return ABCSampler(
+            _MutatingSimulation(),
+            {"beta": stats.uniform()},
+            {"probe": _PickleProbe(tmp_path / "serialized.txt")},
+            np.zeros(3),
+            distance_function=_mutating_distance,
+            rng=43,
+        )
+
+    options = dict(
+        strategy="rejection",
+        num_particles=6,
+        epsilon=0.3,
+        verbose=False,
+    )
+    reference = sampler().calibrate(n_workers=1, **options)
+    with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as pool:
+        assert_exact_calibration(
+            reference, sampler().calibrate(executor=pool, **options)
+        )

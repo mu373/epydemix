@@ -9,7 +9,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from epydemix.calibration import _checkpoint, _history, _worker
+from epydemix.calibration import _checkpoint, _evaluate, _history
 from tests.fixtures.calibration import assert_exact_calibration, make_sampler
 
 
@@ -27,7 +27,7 @@ def run(path, **kwargs):
 def test_arrays_released_and_history_loaded_only_on_access(tmp_path):
     path = tmp_path / "run.checkpoint"
     references = []
-    original = _worker.evaluate_particle
+    original = _evaluate.evaluate_particle
 
     def capture(*args, **kwargs):
         if len(references) == 8:
@@ -38,7 +38,7 @@ def test_arrays_released_and_history_loaded_only_on_access(tmp_path):
             references.append(weakref.ref(result["simulation"]["data"]))
         return result
 
-    with patch.object(_worker, "evaluate_particle", side_effect=capture):
+    with patch.object(_evaluate, "evaluate_particle", side_effect=capture):
         result = run(path)
     assert references and all(reference() is None for reference in references)
     field = result.selected_trajectories
@@ -73,7 +73,7 @@ def test_failed_append_preserves_previous_checkpoint_and_results(tmp_path, failu
     )
     snapshot = path.read_bytes()
     write = _checkpoint.write_checkpoint
-    evaluate = _worker.evaluate_particle
+    evaluate = _evaluate.evaluate_particle
 
     def fail_save(target, *args, **kwargs):
         should_fail = (
@@ -95,7 +95,7 @@ def test_failed_append_preserves_previous_checkpoint_and_results(tmp_path, failu
         return evaluate(*args, **kwargs)
 
     with patch.object(_checkpoint, "write_checkpoint", side_effect=fail_save):
-        with patch.object(_worker, "evaluate_particle", side_effect=fail_simulation):
+        with patch.object(_evaluate, "evaluate_particle", side_effect=fail_simulation):
             with pytest.raises((RuntimeError, OSError), match="injected"):
                 run(path, resume=True)
     assert path.read_bytes() == snapshot

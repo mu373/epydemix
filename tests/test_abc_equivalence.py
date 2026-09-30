@@ -1,23 +1,18 @@
 """Shared exact-equivalence contract for sequential and parallel calibration."""
 
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
-from itertools import count
 from multiprocessing import get_context
-from threading import Event
-from unittest.mock import patch
 
 import numpy as np
 import pytest
 from pandas.testing import assert_frame_equal
 
-from epydemix.calibration.parallel import (
-    _get_available_cpu_count,
-    create_particle_scheduler,
-)
+from epydemix._execution import _get_available_cpu_count
 from tests.fixtures.calibration import (
     assert_exact_calibration,
     make_runtime_skewed_sampler,
+    make_sampler,
     make_seeded_sampler,
 )
 
@@ -33,9 +28,9 @@ def scheduler_strategy(request):
 class TestParallelEquivalence:
     """Require exact sequential results from every registered parallel scheduler.
 
-    Covers all ABC strategies, seed sources, repeated calls, projections, budget
-    cutoffs, candidate evaluation counts, and parameter-dependent runtimes.
-    Real-time cutoffs are excluded because they can change the evaluated prefix.
+    Covers all ABC strategies, seed sources, repeated calls, projections, and
+    parameter-dependent runtimes. DYN may perform surplus evaluations; binding
+    time or physical-budget cutoffs are excluded from the cross-strategy contract.
     Add scheduler names to the scheduler_strategy fixture, not copied test classes.
     """
 
@@ -61,14 +56,18 @@ class TestParallelEquivalence:
     ):
         """Check exact repeatability across seed sources and available worker counts."""
 
+        scheduling = (
+            {}
+            if strategy == "top_fraction"
+            else {"parallel_strategy": scheduler_strategy}
+        )
+
         def calibrate(seed, workers):
             return make_seeded_sampler(seed, source).calibrate(
                 strategy=strategy,
                 verbose=False,
                 n_workers=workers,
-                parallel_strategy=scheduler_strategy
-                if workers is not None
-                else "dynamic",
+                **scheduling,
                 **options,
             )
 
@@ -115,7 +114,6 @@ class TestParallelEquivalence:
                     iterations=10,
                     rng=rng,
                     executor=executor,
-                    parallel_strategy=scheduler_strategy,
                 )
                 assert_frame_equal(
                     left.projection_parameters["baseline"],
@@ -128,28 +126,41 @@ class TestParallelEquivalence:
                 )
             assert executor.submit(int, "7").result() == 7
 
-    @pytest.mark.parametrize("strategy", ["smc", "rejection"])
-    @pytest.mark.parametrize("budget", [0, 4, 19])
-    def test_partial_budget_results_match(self, scheduler_strategy, strategy, budget):
-        """Check sequential and process results match when a budget interrupts sampling."""
-        options = dict(num_generations=3) if strategy == "smc" else dict(epsilon=1.0)
+    @pytest.mark.parametrize("history_storage", ["memory", "disk"])
+    def test_sir_checkpoint_resume_across_schedulers(
+        self, scheduler_strategy, history_storage, tmp_path
+    ):
+        """A real SIR model and resumed SMC retain every generation across strategies.
 
-        def run(workers):
-            return make_seeded_sampler(43, "parameters-int").calibrate(
-                strategy=strategy,
-                num_particles=7,
-                verbose=False,
-                total_simulations_budget=budget,
-                n_workers=workers,
-                parallel_strategy=scheduler_strategy
-                if workers is not None
-                else "dynamic",
-                **options,
-            )
-
-        reference = run(None)
-        for workers in sorted({1, min(4, _CPU_CAPACITY)}):
-            assert_exact_calibration(reference, run(workers))
+        Resume a one-generation parallel checkpoint using sequential execution.
+        Surplus evaluation counts may differ, but RNG state and retained data
+        must match an uninterrupted sequential run for both history backends.
+        """
+        reference_sampler = make_sampler("sir")
+        options = dict(num_particles=6, verbose=False)
+        reference = reference_sampler.calibrate(num_generations=3, **options)
+        checkpoint = tmp_path / "run.checkpoint"
+        parallel = make_sampler("sir")
+        parallel.calibrate(
+            num_generations=1,
+            n_workers=min(2, _CPU_CAPACITY),
+            parallel_strategy=scheduler_strategy,
+            checkpoint_path=checkpoint,
+            history_storage=history_storage,
+            **options,
+        )
+        result = parallel.calibrate(
+            num_generations=3,
+            checkpoint_path=checkpoint,
+            resume=True,
+            history_storage=history_storage,
+            **options,
+        )
+        assert_exact_calibration(reference, result)
+        assert (
+            reference_sampler.rng.bit_generator.state
+            == parallel.rng.bit_generator.state
+        )
 
     @pytest.mark.parametrize("strategy", ["rejection", "smc"])
     @pytest.mark.parametrize("slow_sign", [-1, 1])
@@ -173,7 +184,7 @@ class TestParallelEquivalence:
 
         This small regression checks exact equivalence, not statistical agreement
         with a 50:50 target. It makes no assertion about timing or completion order;
-        the event-controlled scheduler test below forces an ordering reversal.
+        test_particle_jobs checks ordered selection with synchronized workers.
         """
         if _CPU_CAPACITY < 2:
             pytest.skip(
@@ -206,62 +217,3 @@ class TestParallelEquivalence:
             )
         assert_exact_calibration(reference, result)
         assert serial.rng.bit_generator.state == parallel.rng.bit_generator.state
-
-    def test_completion_order_preserves_candidates_and_evaluation_count(
-        self, scheduler_strategy
-    ):
-        """Force a later candidate to finish first and retain the sequential sample.
-
-        The done callback releases candidate 0 only after candidate 2's future is
-        complete. Both are accepted, so their completion order is always reversed.
-        Even candidate IDs are accepted: the sequential target of three particles
-        therefore requires IDs [0, 2, 4] and exactly five evaluations. Matching both
-        catches completion-order selection and surplus evaluations. Events provide
-        a guaranteed reversal to complement the runtime-skew model's sleep delays.
-        """
-
-        def candidate_result(index):
-            return {"params": [index], "accepted": index % 2 == 0}
-
-        reference = create_particle_scheduler("dynamic").run_until_n_accepted(
-            None,
-            candidate_result,
-            ((index,) for index in count()),
-            n_target=3,
-        )
-        later_completed = Event()
-        submitted = []
-
-        def evaluate(index):
-            if index == 0:
-                assert later_completed.wait(timeout=5)
-            return candidate_result(index)
-
-        def arguments():
-            for index in count():
-                submitted.append(index)
-                yield (index,)
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            submit = executor.submit
-
-            def submit_with_completion_signal(fn, index):
-                future = submit(fn, index)
-                if index == 2:
-                    future.add_done_callback(lambda _: later_completed.set())
-                return future
-
-            with patch.object(
-                executor, "submit", side_effect=submit_with_completion_signal
-            ):
-                result = create_particle_scheduler(
-                    scheduler_strategy
-                ).run_until_n_accepted(
-                    executor,
-                    evaluate,
-                    arguments(),
-                    n_target=3,
-                )
-        assert result == reference
-        assert [item["params"][0] for item in result["accepted_results"]] == [0, 2, 4]
-        assert result["n_simulations"] == len(submitted) == 5
