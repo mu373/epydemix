@@ -1,4 +1,13 @@
-"""Prepare candidate evaluations and run model simulations for ABC."""
+"""Run model simulations for ABC calibration and posterior projections.
+
+For each calibration candidate, combine sampled and fixed parameters, run the
+simulation, compute its distance from the observations, and check acceptance.
+Projection runs return the simulation output without a distance or acceptance check.
+
+run_particle_evaluations prepares candidates and runs evaluations for all ABC methods.
+It uses an acceptance loop for SMC/rejection and map_tasks for fixed-count evaluation.
+Owned workers restore fresh inputs through _worker_inputs for each candidate.
+"""
 
 from datetime import datetime
 from functools import partial
@@ -7,6 +16,7 @@ from itertools import islice
 import numpy as np
 
 from .._execution import map_tasks, single_threaded
+from . import _worker_inputs
 from ._proposals import ProposalSequence
 
 
@@ -138,9 +148,55 @@ class EvaluationArguments:
 
 
 def build_particle_tasks(executor, inputs, candidates, *, inclusive=False):
-    """Attach fixed model inputs to independently addressable candidate arguments."""
-    return partial(evaluate_particle, inclusive=inclusive), EvaluationArguments(
-        inputs, candidates
+    """Select an evaluator and lazily encode candidate arguments for the pool.
+
+    Owned calibration pools cache fixed inputs. Sequential evaluation and
+    caller-owned pools receive the full inputs for each candidate instead.
+    Candidates always supply (parameter values, epsilon, RNG).
+    The calibration strategy chooses whether equality with epsilon is accepted.
+    """
+    if (
+        getattr(executor, "_initializer", None)
+        is _worker_inputs.initialize_particle_worker
+    ):
+        evaluate, arguments = evaluate_particle_with_cached_inputs, candidates
+    else:
+        evaluate, arguments = evaluate_particle, EvaluationArguments(inputs, candidates)
+    return partial(evaluate, inclusive=inclusive), arguments
+
+
+def evaluate_particle_with_cached_inputs(
+    params, epsilon=None, rng=None, *, inclusive=False
+):
+    """
+    Evaluate a candidate using the inputs cached by `_worker_inputs.initialize_particle_worker`.
+
+    Only the candidate-specific arguments cross the process boundary.
+
+    Args:
+        params (list): Parameter values, in the order of `param_names`.
+        epsilon (float, optional): Acceptance threshold. Default is None (accept all).
+        rng (np.random.Generator, optional): Candidate-specific generator, injected only for
+            seeded calibration. Default is None.
+        inclusive (bool, optional): Accept equality with epsilon. Default is False.
+
+    Returns:
+        Dict[str, Any]: Same as `evaluate_particle`.
+    """
+    # Restore fresh model inputs for this candidate
+    function, parameters, names, observed, distance = (
+        _worker_inputs.restore_worker_inputs()
+    )
+    return evaluate_particle(
+        function,
+        parameters,
+        names,
+        params,
+        observed,
+        distance,
+        epsilon,
+        rng,
+        inclusive=inclusive,
     )
 
 
