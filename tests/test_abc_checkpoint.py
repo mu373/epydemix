@@ -46,9 +46,10 @@ def _run(sampler, **kwargs):
     )
 
 
+@pytest.mark.parametrize("history_storage", ["memory", "disk"])
 @pytest.mark.parametrize("model", ["deterministic", "sir"])
 def test_replay_in_fresh_spawn_process_with_changed_workers_and_projections(
-    tmp_path, model
+    tmp_path, model, history_storage
 ):
     """Resume in a new interpreter and changed worker count; match every generation, projection and RNG exactly."""
     checkpoint = tmp_path / "run.checkpoint"
@@ -63,6 +64,7 @@ def test_replay_in_fresh_spawn_process_with_changed_workers_and_projections(
         num_particles=8,
         num_generations=1,
         checkpoint_path=checkpoint,
+        history_storage=history_storage,
         verbose=False,
     )
     saved, meta = _checkpoint.read_checkpoint(checkpoint)
@@ -89,7 +91,7 @@ from tests.fixtures.calibration import make_sampler
 if __name__ == "__main__":
     mp.set_start_method("spawn")
     sampler = make_sampler(sys.argv[1], seed=999)
-    result = sampler.calibrate(num_particles=8, num_generations=3, checkpoint_path=sys.argv[2], resume=True, n_workers=int(sys.argv[4]), verbose=False)
+    result = sampler.calibrate(num_particles=8, num_generations=3, checkpoint_path=sys.argv[2], resume=True, n_workers=int(sys.argv[4]), history_storage=sys.argv[5], verbose=False)
     projection = sampler.run_projections(sampler.parameters, iterations=4, n_workers=int(sys.argv[4]))
     with open(sys.argv[3], "wb") as f:
         pickle.dump((result, projection, sampler.rng.bit_generator.state), f)
@@ -104,6 +106,7 @@ if __name__ == "__main__":
             str(checkpoint),
             str(output),
             str(min(2, _get_available_cpu_count())),
+            history_storage,
         ],
         check=True,
         timeout=60,
@@ -514,6 +517,7 @@ def test_environment_checked_only_when_resuming(tmp_path):
         num_particles=3,
         num_generations=1,
         checkpoint_path=path,
+        history_storage="disk",
         verbose=False,
     )
     result = make_sampler("deterministic").calibrate(**options)
