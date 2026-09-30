@@ -1,4 +1,119 @@
-"""Evaluate one calibration candidate or run one posterior projection."""
+"""Prepare candidate evaluations and run model simulations for ABC."""
+
+from datetime import datetime
+from functools import partial
+from itertools import islice
+
+from ._proposals import generate_candidates
+
+
+def run_particle_evaluations(
+    inputs,
+    priors,
+    root_rng,
+    seed_requested,
+    *,
+    n_accepted=None,
+    n_evaluations=None,
+    epsilon=None,
+    scheduler=None,
+    start_time=None,
+    max_time=None,
+    total_simulations_budget=None,
+    n_simulations=0,
+    particles=None,
+    weights=None,
+    perturbations=None,
+    progress=None,
+    inclusive=False,
+):
+    """Prepare candidates and run their evaluations for an ABC method.
+
+    Set exactly one of n_accepted (SMC/rejection) or n_evaluations (top fraction).
+    Acceptance targets use the supplied SequentialScheduler; fixed counts evaluate
+    each candidate.
+    A time or simulation budget can stop either early.
+
+    inputs contains (simulation_function, parameters, param_names, observed_data,
+    distance_function). Previous particles, weights, and perturbations configure
+    SMC proposals; without particles, proposals are drawn from the prior.
+    max_time requires start_time. n_simulations is the count from earlier generations.
+
+    Return accepted_results in candidate order and this call's n_simulations.
+    With epsilon=None, all evaluated candidates are retained for later selection.
+    progress(completed, accepted) reports each sequential evaluation
+    or the completed fixed-count batch.
+    """
+    # Select a stopping condition before advancing the RNG or running simulations
+    if (n_accepted is None) == (n_evaluations is None):
+        raise ValueError("Specify exactly one of n_accepted or n_evaluations")
+    target = n_accepted if n_accepted is not None else n_evaluations
+    if target < 1:
+        raise ValueError("The requested particle count must be positive")
+    if n_accepted is not None and scheduler is None:
+        raise ValueError("Acceptance sampling requires a scheduler")
+
+    # Calculate the deadline and remaining simulation budget
+    deadline = start_time + max_time if max_time else None
+    remaining = (
+        total_simulations_budget - n_simulations + 1
+        if total_simulations_budget
+        else None
+    )
+    if (remaining is not None and remaining <= 0) or (
+        deadline is not None and datetime.now() > deadline
+    ):
+        return {"accepted_results": [], "n_simulations": 0}
+
+    # Propose parameters using the existing shared RNG
+    candidates = generate_candidates(
+        priors,
+        inputs[2],
+        root_rng,
+        seed_requested,
+        epsilon,
+        particles,
+        weights,
+        perturbations,
+        deadline,
+    )
+    # Prepare the evaluator and its inputs
+    evaluate, arguments = build_particle_tasks(inputs, candidates, inclusive=inclusive)
+
+    if n_evaluations is not None:
+        # Evaluate a fixed number of candidates and preserve their input order
+        count = (
+            min(n_evaluations, remaining) if remaining is not None else n_evaluations
+        )
+        results, accepted = [], []
+        for args in islice(arguments, count):
+            result = evaluate(*args)
+            results.append(result)
+            if result["accepted"]:
+                accepted.append(result)
+            if progress is not None:
+                progress(len(results), len(accepted))
+        return {"accepted_results": accepted, "n_simulations": len(results)}
+
+    # Evaluate until enough candidates are accepted or a limit is reached
+    return scheduler.run_until_n_accepted(
+        evaluate,
+        arguments,
+        n_target=n_accepted,
+        max_simulations=remaining,
+        deadline=deadline,
+        progress=progress,
+    )
+
+
+def build_particle_tasks(inputs, candidates, *, inclusive=False):
+    """Attach fixed model inputs to each candidate for evaluation."""
+    function, parameters, names, observed, distance = inputs
+    arguments = (
+        (function, parameters, names, params, observed, distance, epsilon, rng)
+        for params, epsilon, rng in candidates
+    )
+    return partial(evaluate_particle, inclusive=inclusive), arguments
 
 
 def evaluate_particle(
