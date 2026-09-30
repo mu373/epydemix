@@ -206,9 +206,10 @@ class ABCSampler:
         parallel_strategy: str = "dynamic",
         checkpoint_path: Optional[str] = None,
         resume: bool = False,
+        history_storage: str = "memory",
     ) -> CalibrationResults:
         """
-        Run ABC-SMC and retain each complete generation in memory.
+        Run ABC-SMC and retain complete generations in memory or on disk.
 
         Args:
             num_particles (int, optional): Number of particles per generation. Default is 1000.
@@ -238,6 +239,9 @@ class ABCSampler:
                 Requires an explicit seed and picklable inputs. Existing files require resume=True.
             resume (bool, optional): Restore matching inputs, kernels and RNG state. Workers,
                 generation target and total budget may change. Incomplete generations are rerun.
+
+            history_storage (str, optional): "memory" retains all generations; "disk"
+                stores lazy field mappings next to the required checkpoint_path. Default is "memory".
 
         Returns:
             CalibrationResults: Results of the last complete generation and its history. Empty if
@@ -275,6 +279,7 @@ class ABCSampler:
                         scheduler=scheduler,
                         checkpoint_path=checkpoint_path,
                         resume=resume,
+                        history_storage=history_storage,
                     )
                     results.calibration_params["execution_metrics"] = metrics
                     return results

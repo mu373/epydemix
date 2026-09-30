@@ -21,7 +21,7 @@ from ..utils.abc_smc_utils import (
     DefaultPerturbationDiscrete,
     compute_particle_weights,
 )
-from . import _checkpoint, _evaluate
+from . import _checkpoint, _evaluate, _history
 from .calibration_results import CalibrationResults
 
 _STOP_MESSAGES = {
@@ -78,6 +78,7 @@ class SMCRun:
         scheduler,
         checkpoint_path,
         resume,
+        history_storage,
     ) -> CalibrationResults:
         """
         Run the ABC-SMC generations inside an already opened worker pool.
@@ -85,7 +86,7 @@ class SMCRun:
         Args:
             num_particles, num_generations, epsilon_schedule, epsilon_quantile_level,
             minimum_epsilon, max_time, total_simulations_budget, perturbations, verbose,
-            checkpoint_path, resume:
+            checkpoint_path, resume, history_storage:
                 See `ABCSampler.run_smc`.
             pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
             scheduler: SequentialScheduler or DynamicScheduler for acceptance sampling.
@@ -104,6 +105,18 @@ class SMCRun:
                 for param in self.param_names
             }
 
+        if history_storage not in ("memory", "disk"):
+            raise ValueError("history_storage must be 'memory' or 'disk'")
+        if history_storage == "disk" and checkpoint_path is None:
+            raise ValueError("history_storage='disk' requires checkpoint_path")
+        self.history_storage = history_storage
+        self.history_directory = (
+            Path(str(checkpoint_path) + ".history")
+            if history_storage == "disk"
+            else None
+        )
+        self.metrics["history_storage"] = history_storage
+        self.metrics["history_io_seconds"] = 0.0
         checkpoint_path = Path(checkpoint_path) if checkpoint_path is not None else None
         inputs, metadata, restored = self._prepare_checkpoint(
             checkpoint_path,
@@ -140,9 +153,12 @@ class SMCRun:
         particles = weights = distances = None
         first_generation = restored["next_generation"] if restored is not None else 0
         if restored is not None:
+            history_started = perf_counter()
             particles = results.get_posterior_distribution().to_numpy()
             weights = results.get_weights()
             distances = results.get_distances()
+            if history_storage == "disk":
+                self.metrics["history_io_seconds"] += perf_counter() - history_started
             reason = _stopping_reason(
                 restored["epsilon"],
                 minimum_epsilon,
@@ -226,8 +242,22 @@ class SMCRun:
                 "distances": distances,
                 "selected_trajectories": new_gen["simulations"],
             }
-            for name, value in values.items():
-                getattr(results, name)[gen] = value
+            if history_storage == "disk":
+                history_started = perf_counter()
+                _history.save_generation(
+                    results,
+                    gen,
+                    values,
+                    self.history_directory,
+                    metadata["environment"],
+                )
+                elapsed = perf_counter() - history_started
+                self.last_generation["history_io_seconds"] = elapsed
+                self.metrics["history_io_seconds"] += elapsed
+            else:
+                for name, value in values.items():
+                    getattr(results, name)[gen] = value
+            del values
 
             if verbose:
                 # Print generation information
@@ -267,6 +297,8 @@ class SMCRun:
                     overwrite=resume or gen > 0,
                 )
 
+            # Release disk-mode trajectories before requesting the next generation.
+            del new_gen
             self._record_generation(generation_started)
 
             # Diagnose the same boundaries without conflating per-generation counts.
@@ -335,6 +367,7 @@ class SMCRun:
             restored = None
             metadata = {
                 "strategy": "smc",
+                "history_storage": self.history_storage,
                 "run_id": str(uuid4()),
                 "call_run_id": self.metrics["run_id"],
                 "param_names": self.param_names,
@@ -373,6 +406,12 @@ class SMCRun:
             raise ValueError(
                 "total_simulations_budget is below the saved simulation count"
             )
+        if metadata.get("history_storage", "memory") != self.history_storage:
+            raise ValueError("history_storage must match the saved checkpoint")
+        if self.history_storage == "disk":
+            started = perf_counter()
+            _history.bind_history(restored["results"], self.history_directory)
+            self.metrics["history_io_seconds"] += perf_counter() - started
         current_environment = _checkpoint.environment()
         if metadata["environment"] != current_environment:
             warnings.warn(
@@ -592,6 +631,7 @@ class SMCRun:
             "collection_seconds": perf_counter() - collected_at,
             "weights_seconds": 0.0,
             "checkpoint_io_seconds": 0.0,
+            "history_io_seconds": 0.0,
             "stop_reason": result["stop_reason"],
         }
         # Discard incomplete generations

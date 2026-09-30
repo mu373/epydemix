@@ -126,14 +126,15 @@ class TestParallelEquivalence:
                 )
             assert executor.submit(int, "7").result() == 7
 
+    @pytest.mark.parametrize("history_storage", ["memory", "disk"])
     def test_sir_checkpoint_resume_across_schedulers(
-        self, scheduler_strategy, tmp_path
+        self, scheduler_strategy, history_storage, tmp_path
     ):
         """A real SIR model and resumed SMC retain every generation across strategies.
 
         Resume a one-generation parallel checkpoint using sequential execution.
         Surplus evaluation counts may differ, but RNG state and retained data
-        must match an uninterrupted sequential run with in-memory history.
+        must match an uninterrupted sequential run for both history backends.
         """
         reference_sampler = make_sampler("sir")
         options = dict(num_particles=6, verbose=False)
@@ -145,12 +146,14 @@ class TestParallelEquivalence:
             n_workers=min(2, _CPU_CAPACITY),
             parallel_strategy=scheduler_strategy,
             checkpoint_path=checkpoint,
+            history_storage=history_storage,
             **options,
         )
         result = parallel.calibrate(
             num_generations=3,
             checkpoint_path=checkpoint,
             resume=True,
+            history_storage=history_storage,
             **options,
         )
         assert_exact_calibration(reference, result)

@@ -26,16 +26,19 @@ def _run(path, **options):
     )
 
 
-def test_resume_links_invocations_without_reusing_old_metrics(tmp_path, caplog):
+@pytest.mark.parametrize("storage", ["memory", "disk"])
+def test_resume_links_invocations_without_reusing_old_metrics(
+    tmp_path, caplog, storage
+):
     """One saved generation plus two resumed generations means 4 old and 8 new evaluations."""
     path = tmp_path / "run.checkpoint"
     with caplog.at_level(logging.INFO, logger="epydemix.calibration"):
-        first = _run(path, num_generations=1)
+        first = _run(path, num_generations=1, history_storage=storage)
     first_id = first.calibration_params["execution_metrics"]["run_id"]
     _, first_metadata = _checkpoint.read_checkpoint(path)
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="epydemix.calibration"):
-        resumed = _run(path, num_generations=3, resume=True)
+        resumed = _run(path, num_generations=3, resume=True, history_storage=storage)
     metrics = resumed.calibration_params["execution_metrics"]
     assert metrics["run_id"] != first_id
     assert metrics["resumed_committed_simulations"] == 4
@@ -45,6 +48,12 @@ def test_resume_links_invocations_without_reusing_old_metrics(tmp_path, caplog):
     assert metrics["checkpoint_io_seconds"] >= sum(
         g["checkpoint_io_seconds"] for g in metrics["generations"]
     )
+    write_seconds = sum(g["history_io_seconds"] for g in metrics["generations"])
+    assert metrics["history_io_seconds"] >= write_seconds
+    if storage == "memory":
+        assert metrics["history_io_seconds"] == 0.0
+    else:
+        assert all(g["history_io_seconds"] >= 0.0 for g in metrics["generations"])
     events = [record.epydemix for record in caplog.records]
     resume = next(event for event in events if event["event"] == "checkpoint_resumed")
     assert resume["previous_run_id"] == first_id
@@ -55,7 +64,7 @@ def test_resume_links_invocations_without_reusing_old_metrics(tmp_path, caplog):
     assert metadata["run_id"] == first_metadata["run_id"]
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="epydemix.calibration"):
-        finished = _run(path, num_generations=3, resume=True)
+        finished = _run(path, num_generations=3, resume=True, history_storage=storage)
     assert (
         finished.calibration_params["execution_metrics"]["totals"]["simulations"] == 0
     )
