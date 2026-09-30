@@ -102,6 +102,53 @@ def sample_prior(priors, param_names, rng=None):
     return [priors[param].rvs(random_state=rng) for param in param_names]
 
 
+def compute_particle_weights(
+    particles, previous_particles, previous_weights, priors, param_names, perturbations
+):
+    """Compute normalized ABC-SMC importance weights without changing inputs.
+
+    Rows of both particle arrays follow ``param_names``. If ``previous_particles``
+    is None, the candidates were drawn from the prior and receive uniform weights.
+    Otherwise, divide the joint prior density by the previous weighted kernel
+    mixture. Kernels must already be updated for the previous generation.
+    """
+    continuous_params = {name for name in param_names if hasattr(priors[name], "pdf")}
+    # Generation 0 samples the prior, so all weights are equal. Later
+    # generations use the ABC-SMC importance weight
+    #   w_i = prior(theta_i) / sum_j w_j * K(theta_i | theta_j),
+    # where K is the product of the per-parameter perturbation kernels.
+    # These inputs are plain lists: call the same multiplication reduction used
+    # by np.prod directly, avoiding its dispatch wrapper in the quadratic loop.
+    new_weights = np.ones(len(particles))
+    if previous_particles is not None:
+        for i, params in enumerate(particles):
+            numerator = np.multiply.reduce(
+                [
+                    priors[p].pdf(params[k])
+                    if p in continuous_params
+                    else priors[p].pmf(params[k])
+                    for k, p in enumerate(param_names)
+                ],
+                axis=None,
+            )
+            denominator = np.sum(
+                [
+                    previous_weights[j]
+                    * np.multiply.reduce(
+                        [
+                            perturbations[p].pdf(params[k], previous_particles[j, k])
+                            for k, p in enumerate(param_names)
+                        ],
+                        axis=None,
+                    )
+                    for j in range(len(previous_particles))
+                ]
+            )
+            new_weights[i] = numerator / denominator
+    new_weights /= new_weights.sum()
+    return new_weights
+
+
 def compute_effective_sample_size(weights: np.ndarray) -> float:
     """
     Computes the effective sample size (ESS) of a set of weights.
