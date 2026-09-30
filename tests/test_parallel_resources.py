@@ -244,12 +244,17 @@ def test_native_discovery_once_per_serial_batch_and_refreshes(monkeypatch):
 
 
 @pytest.mark.skipif(os.name != "posix", reason="fork state is POSIX-specific")
-def test_fork_does_not_inherit_active_native_scope():
+def test_fork_does_not_inherit_active_native_scope(monkeypatch):
     """Lazy fork under parent limits must still respect a worker initializer.
 
     The initializer sets two threads, while candidate evaluation requires one and
-    must restore two afterward. A copied active flag would incorrectly skip limits.
+    must restore two afterward. Seed the copied flag directly: changing parent BLAS
+    limits around fork can corrupt OpenBLAS state (upstream issue #4981).
     """
+    monkeypatch.setattr(
+        _execution._thread_limit_scope, "pid", os.getpid(), raising=False
+    )
+    monkeypatch.setattr(_execution._thread_limit_scope, "active", True, raising=False)
     with ProcessPoolExecutor(
         max_workers=1, mp_context=get_context("fork"), initializer=_set_two_threads
     ) as pool:
@@ -258,3 +263,22 @@ def test_fork_does_not_inherit_active_native_scope():
         )
         assert len(result) == 1
         assert set(pool.submit(_thread_counts).result()) == {2}
+
+
+def test_parallel_dispatch_does_not_limit_parent_threads(monkeypatch):
+    """Limit workers, leaving the dispatch process and lazy fork startup alone.
+
+    Parent thread-limit changes around fork can corrupt later BLAS calls, observed
+    with NumPy 2.2.6/SciPy 1.15.3 before a KDE plot. Spawn avoids relying on fork in
+    this test; a patched parent factory detects the unnecessary scope deterministically.
+    """
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Parallel dispatch must not change parent native thread limits")
+
+    monkeypatch.setattr(_execution, "threadpool_limits", unexpected)
+    with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as pool:
+        result = _execution.map_tasks(
+            pool, _evaluate.simulate_projection, [(_native_simulate, {})]
+        )
+    assert len(result) == 1

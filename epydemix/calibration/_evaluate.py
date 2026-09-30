@@ -10,7 +10,6 @@ from .._execution import map_tasks, single_threaded
 from ._proposals import ProposalSequence
 
 
-@single_threaded
 def run_particle_evaluations(
     inputs,
     priors,
