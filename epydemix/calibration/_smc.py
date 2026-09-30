@@ -1,7 +1,7 @@
 """ABC-SMC run lifecycle: generations, stopping, checkpointing and resume.
 
-The caller supplies the executor; generations use shared particle evaluation. This module
-owns SMC state and delegates archive I/O to the checkpoint module.
+This module owns SMC state and calls the shared particle evaluation function.
+The caller supplies the executor; archive I/O and disk history live in their modules.
 """
 
 import copy
@@ -20,12 +20,16 @@ from ..utils.abc_smc_utils import (
     DefaultPerturbationDiscrete,
     compute_particle_weights,
 )
-from . import _checkpoint, _evaluate
+from . import _checkpoint, _evaluate, _history
 from .calibration_results import CalibrationResults
 
 
 class SMCRun:
-    "Manage SMC generations and retain the current RNG on success or failure.\n\nEach generation uses _evaluate.run_particle_evaluations to evaluate candidates.\nFixed inputs are references to the caller's model and data."
+    """Manage SMC generations and retain the current RNG on success or failure.
+
+    Each generation uses _evaluate.run_particle_evaluations to evaluate candidates.
+    Fixed inputs are references to the caller's model and data.
+    """
 
     def __init__(self, particle_inputs, priors, rng, seed_requested):
         self.particle_inputs = particle_inputs
@@ -55,6 +59,7 @@ class SMCRun:
         scheduler,
         checkpoint_path,
         resume,
+        history_storage,
     ) -> CalibrationResults:
         """
         Run the ABC-SMC generations inside an already opened worker pool.
@@ -62,7 +67,7 @@ class SMCRun:
         Args:
             num_particles, num_generations, epsilon_schedule, epsilon_quantile_level,
             minimum_epsilon, max_time, total_simulations_budget, perturbations, verbose,
-            checkpoint_path, resume: See `ABCSampler.run_smc`.
+            checkpoint_path, resume, history_storage: See `ABCSampler.run_smc`.
             pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
             scheduler: SequentialScheduler or DynamicScheduler for acceptance sampling.
 
@@ -81,6 +86,15 @@ class SMCRun:
             }
 
         # --- Validate options -------------------------------------------------
+        if history_storage not in ("memory", "disk"):
+            raise ValueError("history_storage must be 'memory' or 'disk'")
+        if history_storage == "disk" and checkpoint_path is None:
+            raise ValueError("history_storage='disk' requires checkpoint_path")
+        history_directory = (
+            Path(str(checkpoint_path) + ".history")
+            if history_storage == "disk"
+            else None
+        )
         if resume and checkpoint_path is None:
             raise ValueError("resume=True requires checkpoint_path")
         # --- Checkpoint setup -------------------------------------------------
@@ -131,6 +145,10 @@ class SMCRun:
                     raise ValueError(
                         "total_simulations_budget is below the saved simulation count"
                     )
+                if metadata.get("history_storage") != history_storage:
+                    raise ValueError("history_storage must match the saved checkpoint")
+                if history_storage == "disk":
+                    _history.bind_history(restored["results"], history_directory)
                 current_environment = _checkpoint.environment()
                 if metadata["environment"] != current_environment:
                     warnings.warn(
@@ -150,6 +168,7 @@ class SMCRun:
             else:
                 metadata = {
                     "strategy": "smc",
+                    "history_storage": history_storage,
                     "run_id": str(uuid4()),
                     "param_names": self.param_names,
                     "num_particles": int(num_particles),
@@ -207,6 +226,7 @@ class SMCRun:
         for gen in range(first_generation, num_generations):
             start_generation_time = datetime.now()
 
+            # Set the acceptance threshold for this generation
             if epsilon_schedule is not None:
                 epsilon = epsilon_schedule[gen]
             elif gen == 0:
@@ -217,10 +237,12 @@ class SMCRun:
                 print(
                     f"\nGeneration {gen + 1}/{num_generations} (epsilon: {epsilon:.6f})"
                 )
+            # Update perturbation kernels from the previous generation
             if gen > 0:
                 for perturbation in perturbations.values():
                     perturbation.update(particles, weights, self.param_names)
 
+            # Collect particles and compute their weights
             new_gen = self._run_generation(
                 particles,
                 weights,
@@ -255,8 +277,15 @@ class SMCRun:
                 "distances": distances,
                 "selected_trajectories": new_gen["simulations"],
             }
-            for name, value in values.items():
-                getattr(results, name)[gen] = value
+            if history_storage == "disk":
+                _history.save_generation(
+                    results, gen, values, history_directory, metadata["environment"]
+                )
+            else:
+                for name, value in values.items():
+                    getattr(results, name)[gen] = value
+            # Disk mode must release trajectory references before the next generation.
+            del values
 
             if verbose:
                 # Print generation information
@@ -305,6 +334,9 @@ class SMCRun:
                     # The first write of a fresh run must not replace a file.
                     overwrite=resume or gen > 0,
                 )
+
+            # In disk mode no result mapping retains these trajectory arrays.
+            del new_gen
 
             # Check stopping conditions between generations
             if _check_stopping_conditions(

@@ -1,6 +1,6 @@
 import datetime
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -10,6 +10,11 @@ import pandas as pd
 class CalibrationResults:
     """
     Class to store and manage the results of a calibration process.
+
+    SMC disk-history mode uses read-only mappings for per-generation fields. Values
+    are loaded on access and not cached. Returned arrays/DataFrames may be edited,
+    but those edits do not modify the saved files. Keep the history directory while
+    using these results; deepcopy copies references without loading all generations.
 
     Attributes:
         calibration_strategy: The strategy used for calibration
@@ -25,18 +30,18 @@ class CalibrationResults:
     """
 
     calibration_strategy: Optional[str] = None
-    posterior_distributions: Dict[int, pd.DataFrame] = field(default_factory=dict)
-    selected_trajectories: Dict[int, List[Any]] = field(default_factory=dict)
+    posterior_distributions: Mapping[int, pd.DataFrame] = field(default_factory=dict)
+    selected_trajectories: Mapping[int, List[Any]] = field(default_factory=dict)
     observed_data: Optional[Any] = None
     priors: Dict[str, Any] = field(default_factory=dict)
     calibration_params: Dict[str, Any] = field(default_factory=dict)
-    distances: Dict[int, List[Any]] = field(default_factory=dict)
-    weights: Dict[int, List[Any]] = field(default_factory=dict)
+    distances: Mapping[int, List[Any]] = field(default_factory=dict)
+    weights: Mapping[int, List[Any]] = field(default_factory=dict)
     projections: Dict[str, List[Any]] = field(default_factory=dict)
     projection_parameters: Dict[str, pd.DataFrame] = field(default_factory=dict)
 
     def _get_generation(
-        self, generation: Optional[int], data_dict: Dict[int, Any]
+        self, generation: Optional[int], data_dict: Mapping[int, Any]
     ) -> Any:
         """Helper method to get data for a specific generation."""
         generations = list(data_dict.keys())
