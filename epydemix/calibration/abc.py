@@ -737,15 +737,22 @@ class ABCSampler:
         Returns:
             bool: True if any stopping condition is met, False otherwise
         """
-        if minimum_epsilon and epsilon and epsilon < minimum_epsilon:
+        if (
+            minimum_epsilon is not None
+            and epsilon is not None
+            and epsilon < minimum_epsilon
+        ):
             if verbose:
                 print("Minimum epsilon reached")
             return True
-        if max_time and datetime.now() - start_time > max_time:
+        if max_time is not None and datetime.now() - start_time >= max_time:
             if verbose:
                 print("Maximum time reached")
             return True
-        if total_simulations_budget and n_simulations > total_simulations_budget:
+        if (
+            total_simulations_budget is not None
+            and n_simulations >= total_simulations_budget
+        ):
             if verbose:
                 print("Total simulations budget reached")
             return True

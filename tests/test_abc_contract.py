@@ -151,3 +151,46 @@ def test_explicit_schedule_overrides_adaptation():
     assert len(result.posterior_distributions) == 3
     for generation, epsilon in enumerate([1, 0.5, 0.25]):
         assert np.all(result.get_distances(generation) <= epsilon)
+
+
+def test_adaptive_epsilon_uses_previous_distance_quantile():
+    """[0,1,2,3] has the .25 quantile .75; equality must fail in the next generation.
+
+    Alternating .75 and smaller distances distinguishes the intended quantile from
+    the median and from quantiles of accepted-so-far particles in the new generation.
+    """
+    values = iter([0, 1, 2, 3, 0.75, 0.5, 0.75, 0.4, 0.75, 0.3, 0.75, 0.2])
+    sampler = ABCSampler(
+        lambda parameters: {"data": np.array([next(values)])},
+        {"mu": stats.norm()},
+        {},
+        np.array([0]),
+        absolute_distance,
+        rng=43,
+    )
+    result = sampler.calibrate(
+        num_particles=4, num_generations=2, epsilon_quantile_level=0.25, verbose=False
+    )
+    np.testing.assert_array_equal(result.get_distances(1), [0.5, 0.4, 0.3, 0.2])
+
+
+def test_top_fraction_reports_progress_and_final_completion(capsys):
+    """25 evaluations expose both intermediate progress and the final odd remainder.
+
+    The pre-refactor 10% interval is two evaluations; a 25th completion still needs
+    an explicit final update. Display must disappear with verbose=False.
+    """
+    sampler = ABCSampler(
+        lambda parameters: {"data": np.array([0])},
+        {"mu": stats.norm()},
+        {},
+        np.array([0]),
+        absolute_distance,
+        rng=43,
+    )
+    sampler.calibrate(strategy="top_fraction", Nsim=25, verbose=True)
+    output = capsys.readouterr().out
+    assert "Progress: 2/25" in output
+    assert "Progress: 25/25 simulations completed (100.0%)" in output
+    sampler.calibrate(strategy="top_fraction", Nsim=25, verbose=False)
+    assert capsys.readouterr().out == ""
