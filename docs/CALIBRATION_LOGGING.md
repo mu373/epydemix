@@ -97,3 +97,11 @@ write/serialization. Generation entries contain their own save time; a resumed
 run's aggregate also includes its initial read. Generation duration includes save
 time. The archive's legacy cumulative `elapsed_seconds` remains separate from the
 current invocation's duration.
+
+With `history_storage="disk"`, `history_io_seconds` measures generation field
+writes and the field reads needed to resume calibration. In-memory runs report
+zero. Accessing lazy result mappings after calibration ends is outside the run's
+metrics; validation reports fingerprint/readback time separately. Disk mappings
+retain file references, so the checkpoint and its `.history` directory must be
+kept together. Version-one memory checkpoints without a storage-mode field retain
+their original meaning and can still resume in memory mode.
