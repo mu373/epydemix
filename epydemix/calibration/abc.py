@@ -9,6 +9,7 @@ from ..utils.abc_smc_utils import (
     DefaultPerturbationContinuous,
     DefaultPerturbationDiscrete,
 )
+from ..utils.random_utils import rng_for_index
 from . import _evaluate
 from ._scheduler import SequentialScheduler
 from .calibration_results import CalibrationResults
@@ -30,6 +31,10 @@ class ABCSampler:
         rng: Optional[Any] = None,
     ):
         """Initialize ABC calibration.
+
+        Candidates use independent random streams derived from the sampler RNG.
+        This changes seeded outputs from earlier versions. Seeded simulations and
+        custom perturbations must use their supplied RNG for reproducibility.
 
         Args:
             rng: Optional seed or ``np.random.Generator`` making calibration
@@ -412,20 +417,11 @@ class ABCSampler:
         base_seed_seq = getattr(base_bit_generator, "seed_seq", None)
         if base_seed_seq is None:
             base_seed_seq = base_bit_generator._seed_seq
-        child_seed_seqs = [
-            np.random.SeedSequence(
-                base_seed_seq.entropy,
-                spawn_key=base_seed_seq.spawn_key + (i,),
-                pool_size=base_seed_seq.pool_size,
-            )
-            for i in range(iterations)
-        ]
-
         # Run projections and store results
         projections, posterior_samples = [], {}
         for i in range(iterations):
             # Each iteration (trajectory) uses its own child rng
-            rng_i = np.random.default_rng(child_seed_seqs[i])
+            rng_i = rng_for_index(base_seed_seq, i)
 
             # Sample from posterior according to weights
             idx = rng_i.choice(len(posterior), p=weights / weights.sum())
