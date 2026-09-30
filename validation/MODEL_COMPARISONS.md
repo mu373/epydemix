@@ -32,3 +32,10 @@ case uses populations [5,000, 5,000], names young/old, and contact matrix
 [[1,.2],[.2,1]]. Source, outputs, and execution counts are saved in the notebooks;
 the execution JSONL records source and executed-file fingerprints. Full-precision
 ensemble regression fixtures and their RNG-change alert are separate in tests/data/.
+
+All six reference-model checks passed on committed `9c1655e` (raw records in
+results/reference-models.jsonl). Both notebooks also executed successfully on the
+committed combined series `54a18c9`, with their source/output fingerprints recorded
+in results/model-notebooks-integration.jsonl. The standalone branch previously
+passed the same comparison source; the combined run verifies interaction with
+calibration/checkpoint/history additions.
