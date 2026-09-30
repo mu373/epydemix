@@ -1,10 +1,14 @@
 """Sequential candidate evaluation and calibration boundary regressions."""
 
+from datetime import timedelta
+from pathlib import Path
+
 import numpy as np
 import pytest
 from scipy import stats
 
 from epydemix.calibration.abc import ABCSampler
+from tests.fixtures.calibration import make_seeded_sampler
 
 
 def _mock_simulate(params):
@@ -52,3 +56,137 @@ def test_distance_callback_and_upstream_boundary_rules(strategy):
     assert len(result.get_posterior_distribution()) == (
         0 if strategy == "rejection" else 3
     )
+
+
+def _recorded_simulate(params):
+    """Record each evaluation in a unique file to expose extra calls or reused RNGs."""
+    # Exclusive creation detects reused streams as well as counting actual calls.
+    draw = params["rng"].random()
+    with (Path(params["record_dir"]) / str(draw)).open("x"):
+        pass
+    return {"data": np.ones(8)}
+
+
+@pytest.mark.parametrize("budget", [0, 2, 13])
+def test_budget_bounds_actual_simulations(budget, tmp_path):
+    """Count simulation calls to check the budget, including a zero budget."""
+    sampler = make_seeded_sampler(0, "argument-int")
+    sampler.simulation_function = _recorded_simulate
+    sampler.parameters["record_dir"] = str(tmp_path)
+    result = sampler.calibrate(
+        strategy="rejection",
+        num_particles=10,
+        epsilon=-1,
+        total_simulations_budget=budget,
+        verbose=False,
+    )
+    assert len(list(tmp_path.iterdir())) == budget
+    assert len(result.get_posterior_distribution()) == 0
+
+
+@pytest.mark.parametrize("strategy", ["smc", "rejection"])
+def test_zero_duration_stops_before_simulation(strategy):
+    """A zero duration is a cutoff, not an omitted value due to truthiness.
+
+    An always-accepted candidate keeps the test bounded even if the check regresses;
+    the simulation records whether work happened before respecting the deadline.
+    """
+    calls = []
+    sampler = ABCSampler(
+        lambda parameters: calls.append(1) or {"data": np.zeros(1)},
+        {"beta": stats.uniform()},
+        {},
+        np.zeros(1),
+        rng=43,
+    )
+    result = sampler.calibrate(
+        strategy=strategy, num_particles=1, max_time=timedelta(0), verbose=False
+    )
+    assert not calls
+    assert (
+        result.get_posterior_distribution() is None
+        or result.get_posterior_distribution().empty
+    )
+
+
+def test_smc_cumulative_sim_count():
+    """Verify n_simulations accumulates rather than resetting each generation."""
+    priors = {
+        "beta": stats.uniform(0.1, 0.5),
+        "gamma": stats.uniform(0.05, 0.2),
+    }
+    sampler = ABCSampler(
+        simulation_function=_mock_simulate,
+        priors=priors,
+        parameters={"dt": 0.1},
+        observed_data=np.array([90, 82, 75, 68, 62, 57, 52, 48, 44, 40]),
+    )
+    # Exactly two generations fit, with a budget equal to their combined particle count.
+    results = sampler.calibrate(
+        strategy="smc",
+        num_particles=5,
+        num_generations=4,
+        epsilon_schedule=[float("inf")] * 4,
+        total_simulations_budget=10,
+        verbose=False,
+    )
+    # Should have completed 2 generations
+    assert len(results.posterior_distributions) == 2
+
+
+@pytest.mark.parametrize(
+    "counts, completed, accepted",
+    [({"n_accepted": 2}, 6, 2), ({"n_evaluations": 5}, 5, 1)],
+)
+def test_shared_evaluation_stops_on_acceptances_or_evaluations(
+    counts, completed, accepted
+):
+    """Fixed counts must include rejected evaluations; acceptance targets retry."""
+    from epydemix.calibration._evaluate import run_particle_evaluations
+    from epydemix.calibration._scheduler import SequentialScheduler
+
+    calls, progress = [], []
+
+    def simulate(params):
+        calls.append(params["theta"])
+        return {"data": len(calls) % 3}
+
+    def distance(data, simulation):
+        return simulation["data"]
+
+    result = run_particle_evaluations(
+        (simulate, {}, ["theta"], None, distance),
+        {"theta": stats.uniform()},
+        np.random.default_rng(43),
+        True,
+        epsilon=0.5,
+        scheduler=SequentialScheduler() if "n_accepted" in counts else None,
+        progress=lambda done, kept: progress.append((done, kept)),
+        **counts,
+    )
+    assert len(calls) == result["n_simulations"] == completed
+    assert len(result["accepted_results"]) == accepted
+    assert all(item["accepted"] for item in result["accepted_results"])
+    assert progress[-1] == (completed, accepted)
+
+
+@pytest.mark.parametrize(
+    "counts, message",
+    [
+        ({}, "exactly one"),
+        ({"n_accepted": 1, "n_evaluations": 1}, "exactly one"),
+        ({"n_accepted": 0}, "positive"),
+        ({"n_evaluations": 0}, "positive"),
+        ({"n_accepted": 1}, "requires a scheduler"),
+    ],
+)
+def test_shared_evaluation_rejects_invalid_configuration_before_rng_advances(
+    counts, message
+):
+    from epydemix.calibration._evaluate import run_particle_evaluations
+
+    rng = np.random.default_rng(43)
+    state = rng.bit_generator.state
+    with pytest.raises(ValueError, match=message):
+        run_particle_evaluations(None, None, rng, True, **counts)
+    assert rng.bit_generator.state == state
