@@ -87,7 +87,7 @@ History retention comparison (fresh process for each storage mode and generation
 count; defaults are 8 particles, 2 MiB per-particle payload):
 
 ```sh
-python -m validation.benchmark_history_memory --generations 3 6 --payload-mib 1
+python -m validation.benchmark_history_memory --generations 3 6 --payload-mib 1 --repeat 3
 ```
 
 The seeded deterministic scalar model accepts every proposal with explicit
@@ -95,4 +95,4 @@ infinite thresholds. Posterior/weight/distance/trajectory fingerprints must matc
 between memory and disk for each generation count. Operation time and peak RSS
 exclude later fingerprint readback, whose duration is reported separately. Core
 metrics include checkpoint and history I/O performed during calibration.
-See [DISK_HISTORY.md](DISK_HISTORY.md) for current smoke results and their limits.
+See [DISK_HISTORY.md](DISK_HISTORY.md) for repeated results, preserved smoke records and their limits.
