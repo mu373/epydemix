@@ -108,6 +108,7 @@ def main():
     parser.add_argument("--particles", type=int, default=8)
     parser.add_argument("--payload-mib", type=float, default=2)
     parser.add_argument("--path", type=Path)
+    parser.add_argument("--repeat", type=int, default=1)
     args = parser.parse_args()
     if args.child:
         print(
@@ -124,31 +125,35 @@ def main():
         )
         return
     with tempfile.TemporaryDirectory() as directory:
-        for generations in args.generations:
-            for storage in ("memory", "disk"):
-                path = str(Path(directory) / f"{storage}-{generations}.checkpoint")
-                completed = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "validation.benchmark_history_memory",
-                        "--child",
-                        storage,
-                        "--generations",
-                        str(generations),
-                        "--particles",
-                        str(args.particles),
-                        "--payload-mib",
-                        str(args.payload_mib),
-                        "--path",
-                        path,
-                    ],
-                    text=True,
-                    capture_output=True,
-                    check=True,
-                    timeout=60,
-                )
-                print(completed.stdout.strip(), flush=True)
+        for repeat in range(args.repeat):
+            for generations in args.generations:
+                for storage in ("memory", "disk"):
+                    path = str(
+                        Path(directory) / f"{storage}-{generations}-{repeat}.checkpoint"
+                    )
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "validation.benchmark_history_memory",
+                            "--child",
+                            storage,
+                            "--generations",
+                            str(generations),
+                            "--particles",
+                            str(args.particles),
+                            "--payload-mib",
+                            str(args.payload_mib),
+                            "--path",
+                            path,
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                        timeout=60,
+                    )
+                    report = json.loads(completed.stdout)
+                    print(json.dumps(dict(report, repeat=repeat)), flush=True)
 
 
 if __name__ == "__main__":
