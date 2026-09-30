@@ -14,5 +14,8 @@ Worker value 0 requests the sequential path. Each repetition uses a fresh proces
 and reports source commit, tracked dirty diff, environment, seed, all workload
 arguments, mathematical output fingerprint, simulation counts and timings as JSON
 Lines. See [WORKER_INPUT_CACHE.md](WORKER_INPUT_CACHE.md) for paired measurements.
+The benchmark reads native per-call metrics. To collect application-configured
+JSON events on stderr, add `--log-json`; compare logging-enabled timing separately
+from ordinary timing. See [logging definitions](../docs/CALIBRATION_LOGGING.md).
 Further lifecycle, checkpoint/history, and notebook validation is updated with the
 corresponding PRs.
