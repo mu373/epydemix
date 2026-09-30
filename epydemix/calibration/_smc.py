@@ -97,7 +97,14 @@ class SMCRun:
             elif gen == 0:
                 epsilon = float("inf")
             else:
-                epsilon = np.quantile(distances, epsilon_quantile_level)
+                with np.errstate(invalid="ignore"):
+                    epsilon = np.quantile(distances, epsilon_quantile_level)
+                if np.isnan(epsilon):
+                    raise ValueError(
+                        "Undefined distance quantile; use finite distances"
+                    )
+            if np.isnan(epsilon):
+                raise ValueError("epsilon must not be NaN")
             if verbose:
                 print(
                     f"\nGeneration {gen + 1}/{num_generations} (epsilon: {epsilon:.6f})"
