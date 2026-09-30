@@ -1,0 +1,1359 @@
+{
+  "source_commit": "f2264e6a7a52dc0d67428b859226337ffdb9bd01",
+  "environment": {
+    "python": "3.12.11",
+    "numpy": "1.26.4",
+    "scipy": "1.16.3",
+    "pandas": "2.3.3"
+  },
+  "results": [
+    {
+      "trajectories": [
+        {
+          "dates": [
+            "2023-01-01T00:00:00.000000000",
+            "2023-01-02T00:00:00.000000000",
+            "2023-01-03T00:00:00.000000000",
+            "2023-01-04T00:00:00.000000000",
+            "2023-01-05T00:00:00.000000000",
+            "2023-01-06T00:00:00.000000000"
+          ],
+          "compartment_idx": {
+            "Susceptible": 0,
+            "Infected": 1,
+            "Recovered": 2
+          },
+          "transitions_idx": {
+            "Susceptible_to_Infected": 0,
+            "Infected_to_Recovered": 1
+          },
+          "compartments": {
+            "Susceptible_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9868.0,
+                9832.0,
+                9785.0,
+                9719.0,
+                9635.0,
+                9555.0
+              ]
+            },
+            "Susceptible_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9868.0,
+                9832.0,
+                9785.0,
+                9719.0,
+                9635.0,
+                9555.0
+              ]
+            },
+            "Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                128.0,
+                153.0,
+                187.0,
+                235.0,
+                283.0,
+                342.0
+              ]
+            },
+            "Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                128.0,
+                153.0,
+                187.0,
+                235.0,
+                283.0,
+                342.0
+              ]
+            },
+            "Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                4.0,
+                15.0,
+                28.0,
+                46.0,
+                82.0,
+                103.0
+              ]
+            },
+            "Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                4.0,
+                15.0,
+                28.0,
+                46.0,
+                82.0,
+                103.0
+              ]
+            }
+          },
+          "transitions": {
+            "Susceptible_to_Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                32.0,
+                36.0,
+                47.0,
+                66.0,
+                84.0,
+                80.0
+              ]
+            },
+            "Susceptible_to_Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                32.0,
+                36.0,
+                47.0,
+                66.0,
+                84.0,
+                80.0
+              ]
+            },
+            "Infected_to_Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                4.0,
+                11.0,
+                13.0,
+                18.0,
+                36.0,
+                21.0
+              ]
+            },
+            "Infected_to_Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                4.0,
+                11.0,
+                13.0,
+                18.0,
+                36.0,
+                21.0
+              ]
+            }
+          },
+          "parameters": {
+            "transmission_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ]
+              ]
+            },
+            "recovery_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ]
+              ]
+            }
+          }
+        },
+        {
+          "dates": [
+            "2023-01-01T00:00:00.000000000",
+            "2023-01-02T00:00:00.000000000",
+            "2023-01-03T00:00:00.000000000",
+            "2023-01-04T00:00:00.000000000",
+            "2023-01-05T00:00:00.000000000",
+            "2023-01-06T00:00:00.000000000"
+          ],
+          "compartment_idx": {
+            "Susceptible": 0,
+            "Infected": 1,
+            "Recovered": 2
+          },
+          "transitions_idx": {
+            "Susceptible_to_Infected": 0,
+            "Infected_to_Recovered": 1
+          },
+          "compartments": {
+            "Susceptible_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9873.0,
+                9842.0,
+                9798.0,
+                9739.0,
+                9680.0,
+                9600.0
+              ]
+            },
+            "Susceptible_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9873.0,
+                9842.0,
+                9798.0,
+                9739.0,
+                9680.0,
+                9600.0
+              ]
+            },
+            "Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                117.0,
+                141.0,
+                172.0,
+                220.0,
+                254.0,
+                311.0
+              ]
+            },
+            "Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                117.0,
+                141.0,
+                172.0,
+                220.0,
+                254.0,
+                311.0
+              ]
+            },
+            "Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                10.0,
+                17.0,
+                30.0,
+                41.0,
+                66.0,
+                89.0
+              ]
+            },
+            "Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                10.0,
+                17.0,
+                30.0,
+                41.0,
+                66.0,
+                89.0
+              ]
+            }
+          },
+          "transitions": {
+            "Susceptible_to_Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                27.0,
+                31.0,
+                44.0,
+                59.0,
+                59.0,
+                80.0
+              ]
+            },
+            "Susceptible_to_Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                27.0,
+                31.0,
+                44.0,
+                59.0,
+                59.0,
+                80.0
+              ]
+            },
+            "Infected_to_Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                10.0,
+                7.0,
+                13.0,
+                11.0,
+                25.0,
+                23.0
+              ]
+            },
+            "Infected_to_Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                10.0,
+                7.0,
+                13.0,
+                11.0,
+                25.0,
+                23.0
+              ]
+            }
+          },
+          "parameters": {
+            "transmission_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ]
+              ]
+            },
+            "recovery_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ]
+              ]
+            }
+          }
+        },
+        {
+          "dates": [
+            "2023-01-01T00:00:00.000000000",
+            "2023-01-02T00:00:00.000000000",
+            "2023-01-03T00:00:00.000000000",
+            "2023-01-04T00:00:00.000000000",
+            "2023-01-05T00:00:00.000000000",
+            "2023-01-06T00:00:00.000000000"
+          ],
+          "compartment_idx": {
+            "Susceptible": 0,
+            "Infected": 1,
+            "Recovered": 2
+          },
+          "transitions_idx": {
+            "Susceptible_to_Infected": 0,
+            "Infected_to_Recovered": 1
+          },
+          "compartments": {
+            "Susceptible_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9869.0,
+                9825.0,
+                9782.0,
+                9739.0,
+                9689.0,
+                9613.0
+              ]
+            },
+            "Susceptible_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9869.0,
+                9825.0,
+                9782.0,
+                9739.0,
+                9689.0,
+                9613.0
+              ]
+            },
+            "Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                128.0,
+                163.0,
+                190.0,
+                220.0,
+                245.0,
+                292.0
+              ]
+            },
+            "Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                128.0,
+                163.0,
+                190.0,
+                220.0,
+                245.0,
+                292.0
+              ]
+            },
+            "Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                3.0,
+                12.0,
+                28.0,
+                41.0,
+                66.0,
+                95.0
+              ]
+            },
+            "Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                3.0,
+                12.0,
+                28.0,
+                41.0,
+                66.0,
+                95.0
+              ]
+            }
+          },
+          "transitions": {
+            "Susceptible_to_Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                31.0,
+                44.0,
+                43.0,
+                43.0,
+                50.0,
+                76.0
+              ]
+            },
+            "Susceptible_to_Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                31.0,
+                44.0,
+                43.0,
+                43.0,
+                50.0,
+                76.0
+              ]
+            },
+            "Infected_to_Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                3.0,
+                9.0,
+                16.0,
+                13.0,
+                25.0,
+                29.0
+              ]
+            },
+            "Infected_to_Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                3.0,
+                9.0,
+                16.0,
+                13.0,
+                25.0,
+                29.0
+              ]
+            }
+          },
+          "parameters": {
+            "transmission_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ]
+              ]
+            },
+            "recovery_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ]
+              ]
+            }
+          }
+        }
+      ],
+      "parameters": {
+        "transmission_rate": 0.3,
+        "recovery_rate": 0.1
+      },
+      "rng": {
+        "bit_generator": "PCG64",
+        "state": {
+          "state": 264651352486052982202706146725483990925,
+          "inc": 25065611243303971628957076795638243391
+        },
+        "has_uint32": 0,
+        "uinteger": 0
+      }
+    },
+    {
+      "trajectories": [
+        {
+          "dates": [
+            "2023-01-01T00:00:00.000000000",
+            "2023-01-02T00:00:00.000000000",
+            "2023-01-03T00:00:00.000000000",
+            "2023-01-04T00:00:00.000000000",
+            "2023-01-05T00:00:00.000000000",
+            "2023-01-06T00:00:00.000000000"
+          ],
+          "compartment_idx": {
+            "Susceptible": 0,
+            "Infected": 1,
+            "Recovered": 2
+          },
+          "transitions_idx": {
+            "Susceptible_to_Infected": 0,
+            "Infected_to_Recovered": 1
+          },
+          "compartments": {
+            "Susceptible_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9869.0,
+                9829.0,
+                9788.0,
+                9736.0,
+                9668.0,
+                9574.0
+              ]
+            },
+            "Susceptible_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9869.0,
+                9829.0,
+                9788.0,
+                9736.0,
+                9668.0,
+                9574.0
+              ]
+            },
+            "Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                122.0,
+                153.0,
+                182.0,
+                219.0,
+                263.0,
+                335.0
+              ]
+            },
+            "Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                122.0,
+                153.0,
+                182.0,
+                219.0,
+                263.0,
+                335.0
+              ]
+            },
+            "Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9.0,
+                18.0,
+                30.0,
+                45.0,
+                69.0,
+                91.0
+              ]
+            },
+            "Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9.0,
+                18.0,
+                30.0,
+                45.0,
+                69.0,
+                91.0
+              ]
+            }
+          },
+          "transitions": {
+            "Susceptible_to_Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                31.0,
+                40.0,
+                41.0,
+                52.0,
+                68.0,
+                94.0
+              ]
+            },
+            "Susceptible_to_Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                31.0,
+                40.0,
+                41.0,
+                52.0,
+                68.0,
+                94.0
+              ]
+            },
+            "Infected_to_Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9.0,
+                9.0,
+                12.0,
+                15.0,
+                24.0,
+                22.0
+              ]
+            },
+            "Infected_to_Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9.0,
+                9.0,
+                12.0,
+                15.0,
+                24.0,
+                22.0
+              ]
+            }
+          },
+          "parameters": {
+            "transmission_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ]
+              ]
+            },
+            "recovery_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ]
+              ]
+            }
+          }
+        },
+        {
+          "dates": [
+            "2023-01-01T00:00:00.000000000",
+            "2023-01-02T00:00:00.000000000",
+            "2023-01-03T00:00:00.000000000",
+            "2023-01-04T00:00:00.000000000",
+            "2023-01-05T00:00:00.000000000",
+            "2023-01-06T00:00:00.000000000"
+          ],
+          "compartment_idx": {
+            "Susceptible": 0,
+            "Infected": 1,
+            "Recovered": 2
+          },
+          "transitions_idx": {
+            "Susceptible_to_Infected": 0,
+            "Infected_to_Recovered": 1
+          },
+          "compartments": {
+            "Susceptible_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9871.0,
+                9831.0,
+                9796.0,
+                9754.0,
+                9698.0,
+                9619.0
+              ]
+            },
+            "Susceptible_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9871.0,
+                9831.0,
+                9796.0,
+                9754.0,
+                9698.0,
+                9619.0
+              ]
+            },
+            "Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                115.0,
+                143.0,
+                164.0,
+                184.0,
+                231.0,
+                288.0
+              ]
+            },
+            "Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                115.0,
+                143.0,
+                164.0,
+                184.0,
+                231.0,
+                288.0
+              ]
+            },
+            "Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                14.0,
+                26.0,
+                40.0,
+                62.0,
+                71.0,
+                93.0
+              ]
+            },
+            "Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                14.0,
+                26.0,
+                40.0,
+                62.0,
+                71.0,
+                93.0
+              ]
+            }
+          },
+          "transitions": {
+            "Susceptible_to_Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                29.0,
+                40.0,
+                35.0,
+                42.0,
+                56.0,
+                79.0
+              ]
+            },
+            "Susceptible_to_Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                29.0,
+                40.0,
+                35.0,
+                42.0,
+                56.0,
+                79.0
+              ]
+            },
+            "Infected_to_Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                14.0,
+                12.0,
+                14.0,
+                22.0,
+                9.0,
+                22.0
+              ]
+            },
+            "Infected_to_Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                14.0,
+                12.0,
+                14.0,
+                22.0,
+                9.0,
+                22.0
+              ]
+            }
+          },
+          "parameters": {
+            "transmission_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ]
+              ]
+            },
+            "recovery_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ]
+              ]
+            }
+          }
+        },
+        {
+          "dates": [
+            "2023-01-01T00:00:00.000000000",
+            "2023-01-02T00:00:00.000000000",
+            "2023-01-03T00:00:00.000000000",
+            "2023-01-04T00:00:00.000000000",
+            "2023-01-05T00:00:00.000000000",
+            "2023-01-06T00:00:00.000000000"
+          ],
+          "compartment_idx": {
+            "Susceptible": 0,
+            "Infected": 1,
+            "Recovered": 2
+          },
+          "transitions_idx": {
+            "Susceptible_to_Infected": 0,
+            "Infected_to_Recovered": 1
+          },
+          "compartments": {
+            "Susceptible_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9869.0,
+                9822.0,
+                9766.0,
+                9705.0,
+                9622.0,
+                9544.0
+              ]
+            },
+            "Susceptible_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                9869.0,
+                9822.0,
+                9766.0,
+                9705.0,
+                9622.0,
+                9544.0
+              ]
+            },
+            "Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                125.0,
+                163.0,
+                200.0,
+                242.0,
+                293.0,
+                339.0
+              ]
+            },
+            "Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                125.0,
+                163.0,
+                200.0,
+                242.0,
+                293.0,
+                339.0
+              ]
+            },
+            "Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                6.0,
+                15.0,
+                34.0,
+                53.0,
+                85.0,
+                117.0
+              ]
+            },
+            "Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                6.0,
+                15.0,
+                34.0,
+                53.0,
+                85.0,
+                117.0
+              ]
+            }
+          },
+          "transitions": {
+            "Susceptible_to_Infected_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                31.0,
+                47.0,
+                56.0,
+                61.0,
+                83.0,
+                78.0
+              ]
+            },
+            "Susceptible_to_Infected_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                31.0,
+                47.0,
+                56.0,
+                61.0,
+                83.0,
+                78.0
+              ]
+            },
+            "Infected_to_Recovered_0": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                6.0,
+                9.0,
+                19.0,
+                19.0,
+                32.0,
+                32.0
+              ]
+            },
+            "Infected_to_Recovered_total": {
+              "dtype": "float64",
+              "shape": [
+                6
+              ],
+              "data": [
+                6.0,
+                9.0,
+                19.0,
+                19.0,
+                32.0,
+                32.0
+              ]
+            }
+          },
+          "parameters": {
+            "transmission_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ],
+                [
+                  0.3
+                ]
+              ]
+            },
+            "recovery_rate": {
+              "dtype": "float64",
+              "shape": [
+                6,
+                1
+              ],
+              "data": [
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ],
+                [
+                  0.1
+                ]
+              ]
+            }
+          }
+        }
+      ],
+      "parameters": {
+        "transmission_rate": 0.3,
+        "recovery_rate": 0.1
+      },
+      "rng": {
+        "bit_generator": "PCG64",
+        "state": {
+          "state": 4964886371257645081062740474728140148,
+          "inc": 25065611243303971628957076795638243391
+        },
+        "has_uint32": 0,
+        "uinteger": 0
+      }
+    }
+  ]
+}
