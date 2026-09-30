@@ -54,14 +54,14 @@ def run_particle_evaluations(
         raise ValueError("Acceptance sampling requires a scheduler")
 
     # Calculate the deadline and remaining simulation budget
-    deadline = start_time + max_time if max_time else None
+    deadline = start_time + max_time if max_time is not None else None
     remaining = (
-        total_simulations_budget - n_simulations + 1
-        if total_simulations_budget
+        total_simulations_budget - n_simulations
+        if total_simulations_budget is not None
         else None
     )
     if (remaining is not None and remaining <= 0) or (
-        deadline is not None and datetime.now() > deadline
+        deadline is not None and datetime.now() >= deadline
     ):
         return {"accepted_results": [], "n_simulations": 0}
 

@@ -1,5 +1,6 @@
 """Sequential candidate evaluation and calibration boundary regressions."""
 
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +8,7 @@ import pytest
 from scipy import stats
 
 from epydemix.calibration.abc import ABCSampler
+from tests.fixtures.calibration import make_seeded_sampler
 
 
 def _mock_simulate(params):
@@ -63,6 +65,48 @@ def _recorded_simulate(params):
     with (Path(params["record_dir"]) / str(draw)).open("x"):
         pass
     return {"data": np.ones(8)}
+
+
+@pytest.mark.parametrize("budget", [0, 2, 13])
+def test_budget_bounds_actual_simulations(budget, tmp_path):
+    """Count simulation calls to check the budget, including a zero budget."""
+    sampler = make_seeded_sampler(0, "argument-int")
+    sampler.simulation_function = _recorded_simulate
+    sampler.parameters["record_dir"] = str(tmp_path)
+    result = sampler.calibrate(
+        strategy="rejection",
+        num_particles=10,
+        epsilon=-1,
+        total_simulations_budget=budget,
+        verbose=False,
+    )
+    assert len(list(tmp_path.iterdir())) == budget
+    assert len(result.get_posterior_distribution()) == 0
+
+
+@pytest.mark.parametrize("strategy", ["smc", "rejection"])
+def test_zero_duration_stops_before_simulation(strategy):
+    """A zero duration is a cutoff, not an omitted value due to truthiness.
+
+    An always-accepted candidate keeps the test bounded even if the check regresses;
+    the simulation records whether work happened before respecting the deadline.
+    """
+    calls = []
+    sampler = ABCSampler(
+        lambda parameters: calls.append(1) or {"data": np.zeros(1)},
+        {"beta": stats.uniform()},
+        {},
+        np.zeros(1),
+        rng=43,
+    )
+    result = sampler.calibrate(
+        strategy=strategy, num_particles=1, max_time=timedelta(0), verbose=False
+    )
+    assert not calls
+    assert (
+        result.get_posterior_distribution() is None
+        or result.get_posterior_distribution().empty
+    )
 
 
 def test_smc_cumulative_sim_count():

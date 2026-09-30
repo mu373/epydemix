@@ -18,13 +18,13 @@ def generate_candidates(
 ):
     """Yield proposals and their RNG without changing the existing sequential stream."""
     continuous_params = [name for name in names if hasattr(priors[name], "pdf")]
-    while deadline is None or datetime.now() <= deadline:
+    while deadline is None or datetime.now() < deadline:
         rng = root_rng
         if particles is None:
             params = sample_prior(priors, names, rng)
         else:
             while True:
-                if deadline is not None and datetime.now() > deadline:
+                if deadline is not None and datetime.now() >= deadline:
                     return
                 index = rng.choice(len(particles), p=weights / weights.sum())
                 params = [
