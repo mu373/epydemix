@@ -169,13 +169,45 @@ def install_dispatch_profile(directory):
     from concurrent.futures.process import _CallItem
     from multiprocessing.reduction import ForkingPickler
 
-    from epydemix.calibration import _scheduler, _worker_inputs
+    from epydemix.calibration import _evaluate, _scheduler, _worker_inputs
 
-    report = {"tasks": [], "serialization": [], "manager_start": []}
+    report = {
+        "tasks": [],
+        "serialization": [],
+        "manager_start": [],
+        "cache_selected": [],
+    }
     submit, dumps = ProcessPoolExecutor.submit, ForkingPickler.dumps
     initialize = ProcessPoolExecutor.__init__
     save_inputs = _worker_inputs.save_worker_inputs
     manager_start = _scheduler._SchedulerManager.start
+    build_tasks = _evaluate.build_particle_tasks
+
+    def measured_build_tasks(pool, *args, **kwargs):
+        # The pure builder recognizes owned input caches by initializer identity.
+        # Restore that identity only for selection, before any task can be submitted.
+        initializer = getattr(pool, "_initializer", None)
+        wrapped = (
+            isinstance(initializer, partial)
+            and initializer.func is _profile_initializer
+        )
+        if wrapped:
+            pool._initializer = initializer.args[1]
+        try:
+            evaluator, arguments = build_tasks(pool, *args, **kwargs)
+            cached = (
+                getattr(evaluator, "func", evaluator)
+                is _evaluate.evaluate_particle_with_cached_inputs
+            )
+            assert cached == (
+                getattr(pool, "_initializer", None)
+                is _worker_inputs.initialize_particle_worker
+            )
+            report["cache_selected"].append(cached)
+            return evaluator, arguments
+        finally:
+            if wrapped:
+                pool._initializer = initializer
 
     def measured_manager_start(manager, *args, **kwargs):
         started = perf_counter()
@@ -250,6 +282,7 @@ def install_dispatch_profile(directory):
     ProcessPoolExecutor.__init__ = measured_initialize
     _worker_inputs.save_worker_inputs = measured_save_inputs
     _scheduler._SchedulerManager.start = measured_manager_start
+    _evaluate.build_particle_tasks = measured_build_tasks
     ForkingPickler.dumps = staticmethod(measured_dumps)
     return report
 
