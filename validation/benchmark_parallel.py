@@ -9,6 +9,7 @@ python -m validation.benchmark_parallel or this file's absolute path.
 import argparse
 import hashlib
 import json
+import logging
 import multiprocessing as mp
 import os
 import platform
@@ -25,7 +26,7 @@ import psutil
 import scipy
 from scipy import stats
 
-from epydemix.calibration import _evaluate
+from epydemix._logging import JSONFormatter, _json_values
 from epydemix.calibration.abc import ABCSampler
 from epydemix.model import simulate
 from epydemix.model.predefined_models import create_sir
@@ -152,24 +153,13 @@ def fingerprint(result):
 
 def child(args):
     mp.set_start_method(args.start_method, force=True)
+    if args.log_json:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(JSONFormatter())
+        logger = logging.getLogger("epydemix.calibration")
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
     profile = install_dispatch_profile() if args.profile else None
-    phases = []
-    original = _evaluate.run_particle_evaluations
-
-    def measured(*positional, **keywords):
-        start = perf_counter()
-        output = original(*positional, **keywords)
-        phases.append(
-            {
-                "seconds": perf_counter() - start,
-                "simulations": output["n_simulations"],
-                "retained": len(output["accepted_results"]),
-            }
-        )
-        return output
-
-    # Batch-level adapter for stages before native generation metrics exist.
-    _evaluate.run_particle_evaluations = measured
     sampler = make_sampler(args.model, args.payload_mib, args.seed)
     started = perf_counter()
     if args.strategy == "top_fraction":
@@ -189,47 +179,62 @@ def child(args):
         **options,
     )
     elapsed = perf_counter() - started
+    metrics = result.calibration_params["execution_metrics"]
+    phases = [
+        {
+            "seconds": generation["collection_seconds"],
+            "simulations": generation["simulations"],
+            "retained": generation["retained"],
+        }
+        for generation in metrics["generations"]
+    ]
     fingerprint_started = perf_counter()
     output_hash = fingerprint(result)
     print(
         json.dumps(
-            {
-                "model": args.model,
-                "strategy": args.strategy,
-                "workers": args.worker,
-                "particles": args.particles,
-                "generations": args.generations,
-                "seed": args.seed,
-                "payload_mib": args.payload_mib,
-                "start_method": args.start_method,
-                "profile": args.profile,
-                "elapsed_seconds": elapsed,
-                "calibration_started": started,
-                "calibration_finished": started + elapsed,
-                "epsilon": None if args.strategy == "top_fraction" else "Infinity",
-                "top_fraction": 0.5 if args.strategy == "top_fraction" else None,
-                "candidate_phases": phases,
-                "weight_and_other_seconds": elapsed - sum(p["seconds"] for p in phases),
-                "fingerprint": output_hash,
-                "fingerprint_seconds": perf_counter() - fingerprint_started,
-                "dispatch": profile,
-                "benchmark_sha256": hashlib.sha256(
-                    Path(__file__).read_bytes()
-                ).hexdigest(),
-                "source_commit": subprocess.check_output(
-                    ["git", "rev-parse", "HEAD"], text=True
-                ).strip(),
-                "dirty_diff": subprocess.check_output(
-                    ["git", "diff", "HEAD"], text=True
-                ),
-                "environment": {
-                    "python": platform.python_version(),
-                    "numpy": np.__version__,
-                    "scipy": scipy.__version__,
-                    "platform": platform.platform(),
-                    "cpu_count": os.cpu_count(),
-                },
-            }
+            _json_values(
+                {
+                    "model": args.model,
+                    "strategy": args.strategy,
+                    "workers": args.worker,
+                    "particles": args.particles,
+                    "generations": args.generations,
+                    "seed": args.seed,
+                    "payload_mib": args.payload_mib,
+                    "start_method": args.start_method,
+                    "profile": args.profile,
+                    "log_json": args.log_json,
+                    "elapsed_seconds": elapsed,
+                    "calibration_started": started,
+                    "calibration_finished": started + elapsed,
+                    "epsilon": None if args.strategy == "top_fraction" else "Infinity",
+                    "top_fraction": 0.5 if args.strategy == "top_fraction" else None,
+                    "execution_metrics": metrics,
+                    "candidate_phases": phases,
+                    "weight_and_other_seconds": elapsed
+                    - sum(p["seconds"] for p in phases),
+                    "fingerprint": output_hash,
+                    "fingerprint_seconds": perf_counter() - fingerprint_started,
+                    "dispatch": profile,
+                    "benchmark_sha256": hashlib.sha256(
+                        Path(__file__).read_bytes()
+                    ).hexdigest(),
+                    "source_commit": subprocess.check_output(
+                        ["git", "rev-parse", "HEAD"], text=True
+                    ).strip(),
+                    "dirty_diff": subprocess.check_output(
+                        ["git", "diff", "HEAD"], text=True
+                    ),
+                    "environment": {
+                        "python": platform.python_version(),
+                        "numpy": np.__version__,
+                        "scipy": scipy.__version__,
+                        "platform": platform.platform(),
+                        "cpu_count": os.cpu_count(),
+                    },
+                }
+            ),
+            allow_nan=False,
         ),
         flush=True,
     )
@@ -261,6 +266,8 @@ def main(args):
             ]
             if args.profile:
                 command.append("--profile")
+            if args.log_json:
+                command.append("--log-json")
             samples, cpu_totals = [], {}
             with subprocess.Popen(
                 command, stdout=subprocess.PIPE, text=True
@@ -331,6 +338,11 @@ if __name__ == "__main__":
         "--start-method", choices=mp.get_all_start_methods(), default="spawn"
     )
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument(
+        "--log-json",
+        action="store_true",
+        help="Send application-configured JSON events to stderr",
+    )
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--worker", type=int, default=0, help=argparse.SUPPRESS)
     options = parser.parse_args()
