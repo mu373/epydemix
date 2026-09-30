@@ -37,3 +37,11 @@ CALIBRATION_SCALING.md. Raw normal/larger-SIR profiles and small fixed/reused sm
 checks are in results/. Each smoke's posterior fingerprint matches ordinary
 execution for its workload. All profiled physical model-call counts match native
 counts; even a surplus task is recorded. No wall-time threshold is in unit tests.
+
+The corrected harness (`5386c28`) preserves initializer identity during the
+pure evaluator-selection step, before task submission, then restores the profile
+initializer. cache_selected is asserted against the production rule and records
+true for owned caches / false for serial or reused external pools. Owned-cache
+input_restore counts equal physical simulations plus initializer warm restores.
+Earlier uncached-path profiles are archived with an explicit label. Corrected
+profile output hashes match those earlier mathematical results and ordinary runs.
