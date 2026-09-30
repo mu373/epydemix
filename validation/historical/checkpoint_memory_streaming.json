@@ -1,0 +1,54 @@
+{
+  "before": [
+    {
+      "operation": "save",
+      "trajectory_data_mib": 64,
+      "rss_before_mib": 331.17578125,
+      "rss_after_mib": 330.62109375,
+      "peak_rss_mib": 458.22265625,
+      "checkpoint_mib": 64.00785064697266
+    },
+    {
+      "operation": "load",
+      "trajectory_data_mib": 64,
+      "rss_before_mib": 266.76953125,
+      "rss_after_mib": 330.97265625,
+      "peak_rss_mib": 394.58984375,
+      "checkpoint_mib": 64.00785064697266
+    },
+    {
+      "operation": "copy",
+      "trajectory_data_mib": 64,
+      "rss_before_mib": 330.85546875,
+      "rss_after_mib": 394.328125,
+      "peak_rss_mib": 394.328125,
+      "checkpoint_mib": 64.00785064697266
+    }
+  ],
+  "after": [
+    {
+      "operation": "save",
+      "trajectory_data_mib": 64,
+      "rss_before_mib": 331.11328125,
+      "rss_after_mib": 331.125,
+      "peak_rss_mib": 331.125,
+      "checkpoint_mib": 64.00687313079834
+    },
+    {
+      "operation": "load",
+      "trajectory_data_mib": 64,
+      "rss_before_mib": 266.828125,
+      "rss_after_mib": 331.3046875,
+      "peak_rss_mib": 331.3046875,
+      "checkpoint_mib": 64.00687313079834
+    },
+    {
+      "operation": "copy",
+      "trajectory_data_mib": 64,
+      "rss_before_mib": 330.9296875,
+      "rss_after_mib": 394.15234375,
+      "peak_rss_mib": 394.15234375,
+      "checkpoint_mib": 64.00687313079834
+    }
+  ]
+}
