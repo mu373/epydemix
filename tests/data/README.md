@@ -21,4 +21,14 @@ The pinned versions do not pin CPU implementations of PDF arithmetic. The CI run
 36708373748 differed by one float64 ULP in one computed SMC weight, with all other
 fields identical. Weight values alone permit four ULPs; their dtype/shape and all
 particles, distances, trajectories, projections and RNG states remain exact. The
-recorded fixture is unchanged. Independent weight-formula tests remain enabled.
+baseline fixture is unchanged. Independent weight-formula tests remain enabled.
+## Candidate RNG redesign
+
+The old golden failed at the indexed-RNG change, as intended. The active reference
+was explicitly regenerated from `9b084b37ab398d63e6e55618556ad79b9c038c1a`; the unchanged baseline is
+preserved as `abc_reference_baseline.json`. Model, seeds, numerical environment,
+mathematical target tests and threshold contracts were not changed. Each batch now
+consumes one four-word root seed and derives candidate streams by index, changing
+particle values, weights, distances, trajectories, projections and parent RNG state.
+
+To regenerate the active snapshot, run the recipe above using this source commit.
