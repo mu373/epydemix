@@ -19,8 +19,8 @@ def run_particle_evaluations(
     n_accepted=None,
     n_evaluations=None,
     epsilon=None,
-    scheduler=None,
     pool=None,
+    scheduler=None,
     start_time=None,
     max_time=None,
     total_simulations_budget=None,
@@ -35,7 +35,7 @@ def run_particle_evaluations(
     Prepare candidates and run their evaluations for an ABC method.
 
     Set exactly one of n_accepted (SMC/rejection) or n_evaluations (top fraction).
-    Acceptance targets use the supplied SequentialScheduler;
+    Acceptance targets use the supplied SequentialScheduler or DynamicScheduler;
     fixed counts use map_tasks. A time or simulation budget can stop either early.
 
     Args:
@@ -48,7 +48,7 @@ def run_particle_evaluations(
         n_evaluations (int, optional): Target number of candidate evaluations (for top fraction).
         epsilon (float, optional): Distance threshold for acceptance. Default is None.
         pool (ProcessPoolExecutor, optional): Worker pool, or None for sequential execution.
-        scheduler (SequentialScheduler, optional): Acceptance scheduler.
+        scheduler (SequentialScheduler or DynamicScheduler, optional): Acceptance scheduler.
         start_time (datetime, optional): Start timestamp of the calibration run.
         max_time (timedelta, optional): Time limit measured from start_time.
         total_simulations_budget (int, optional): Overall simulation budget.
@@ -127,7 +127,7 @@ def run_particle_evaluations(
         accepted = [result for result in results if result["accepted"]]
         return {"accepted_results": accepted, "n_simulations": len(results)}
 
-    # Evaluate until enough candidates are accepted or a limit is reached
+    # Run the selected acceptance scheduler
     return scheduler.run_until_n_accepted(
         evaluate,
         arguments,
@@ -138,14 +138,37 @@ def run_particle_evaluations(
     )
 
 
+class EvaluationArguments:
+    """
+    Attach uncached model inputs while preserving random candidate access.
+
+    Args:
+        inputs (tuple): 5-tuple of (simulation_function, fixed_parameters, param_names,
+            observed_data, distance_function).
+        candidates (ProposalSequence): Indexable sequence of proposal candidates.
+    """
+
+    def __init__(self, inputs, candidates):
+        self.inputs = inputs
+        self.candidates = candidates
+
+    def __getitem__(self, index):
+        params, epsilon, rng = self.candidates[index]
+        function, parameters, names, observed, distance = self.inputs
+        return function, parameters, names, params, observed, distance, epsilon, rng
+
+    def __iter__(self):
+        """Attach inputs without swallowing IndexError from user callbacks."""
+        function, parameters, names, observed, distance = self.inputs
+        for params, epsilon, rng in self.candidates:
+            yield function, parameters, names, params, observed, distance, epsilon, rng
+
+
 def build_particle_tasks(executor, inputs, candidates, *, inclusive=False):
-    """Attach fixed model inputs to each candidate for evaluation."""
-    function, parameters, names, observed, distance = inputs
-    arguments = (
-        (function, parameters, names, params, observed, distance, epsilon, rng)
-        for params, epsilon, rng in candidates
+    """Attach fixed model inputs to independently addressable candidate arguments."""
+    return partial(evaluate_particle, inclusive=inclusive), EvaluationArguments(
+        inputs, candidates
     )
-    return partial(evaluate_particle, inclusive=inclusive), arguments
 
 
 @single_threaded
