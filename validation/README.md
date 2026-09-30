@@ -19,3 +19,18 @@ JSON events on stderr, add `--log-json`; compare logging-enabled timing separate
 from ordinary timing. See [logging definitions](../docs/CALIBRATION_LOGGING.md).
 Further lifecycle, checkpoint/history, and notebook validation is updated with the
 corresponding PRs.
+
+Checkpoint streaming audit (optional `psutil`, Unix/macOS `resource`):
+
+```sh
+python -m validation.benchmark_checkpoint_memory --size-mib 8
+```
+
+Save, load and deepcopy run in fresh interpreters. Output records the actual
+synthetic payload size, whole-process peak RSS, operation duration, source and
+environment, and matching trajectory fingerprints. Peak RSS includes the process
+baseline and imports; it is not an incremental allocation measurement. This
+synthetic audit complements exact SMC resume and atomic-write tests. The 8 MiB
+smoke report is in `results/checkpoint-streaming-smoke.jsonl`; its save/load/copy
+fingerprints match. It records a pre-commit source plus the exact dirty diff and
+benchmark SHA, and does not establish performance scaling.
