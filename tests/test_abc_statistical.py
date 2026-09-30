@@ -18,6 +18,7 @@ in tests/data/STATISTICAL_VALIDATION.md. No retry or seed selection is permitted
 import numpy as np
 import pytest
 
+from epydemix._execution import _get_available_cpu_count
 from tests.fixtures.statistical_models import (
     DISCRETE_TARGET,
     NORMAL_SCHEDULE,
@@ -39,16 +40,21 @@ def assert_statistical_accuracy(estimates, targets, bounds):
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("workers", [None, 2])
 @pytest.mark.parametrize("model", ["normal", "discrete"])
 @pytest.mark.parametrize("strategy", ["rejection", "smc"])
-def test_calibration_targets_independent_abc_distribution(model, strategy):
+def test_calibration_targets_independent_abc_distribution(model, strategy, workers):
     """Detect biased calibration using an analytic likelihood, not another sampler.
 
     Normal moments/CDF cover continuous proposal and importance weighting; three-state
     probabilities cover pmf and discrete kernels. Check every SMC generation, including
     the prior-proposal initial population. Uniform prior output and ignoring importance
     weights must not pass simply because serial and parallel share the same bug.
+    Two workers are the representative parallel configuration; exact fast tests
+    cover other worker counts/seed sources. Physical surplus is not a target metric.
     """
+    if workers is not None and workers > _get_available_cpu_count():
+        pytest.skip("Statistical parallel check requires two available CPUs")
     schedule = NORMAL_SCHEDULE if model == "normal" else (0.5,) * 3
     if strategy == "rejection":
         schedule = schedule[-1:]
@@ -72,7 +78,11 @@ def test_calibration_targets_independent_abc_distribution(model, strategy):
             else {"num_generations": len(schedule), "epsilon_schedule": schedule}
         )
         result = sampler.calibrate(
-            strategy=strategy, num_particles=PARTICLES, verbose=False, **options
+            strategy=strategy,
+            num_particles=PARTICLES,
+            verbose=False,
+            n_workers=workers,
+            **options,
         )
         assert len(result.posterior_distributions) == len(schedule)
         summaries = []
