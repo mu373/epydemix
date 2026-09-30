@@ -204,6 +204,8 @@ class ABCSampler:
         n_workers: Optional[int] = None,
         executor: Optional[ProcessPoolExecutor] = None,
         parallel_strategy: str = "dynamic",
+        checkpoint_path: Optional[str] = None,
+        resume: bool = False,
     ) -> CalibrationResults:
         """
         Run ABC-SMC and retain each complete generation in memory.
@@ -231,6 +233,11 @@ class ABCSampler:
                 over n_workers. Default is None.
             parallel_strategy (str, optional): Scheduling strategy. Currently only "dynamic" (DYN) is supported.
                 Default is "dynamic". DYN can perform surplus evaluations.
+
+            checkpoint_path (str or Path, optional): Trusted local snapshot of complete generations.
+                Requires an explicit seed and picklable inputs. Existing files require resume=True.
+            resume (bool, optional): Restore matching inputs, kernels and RNG state. Workers,
+                generation target and total budget may change. Incomplete generations are rerun.
 
         Returns:
             CalibrationResults: Results of the last complete generation and its history. Empty if
@@ -266,6 +273,8 @@ class ABCSampler:
                         verbose=verbose,
                         pool=pool,
                         scheduler=scheduler,
+                        checkpoint_path=checkpoint_path,
+                        resume=resume,
                     )
                     results.calibration_params["execution_metrics"] = metrics
                     return results
