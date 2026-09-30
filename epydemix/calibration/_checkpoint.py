@@ -277,6 +277,7 @@ def environment():
         Path(__file__),
         Path(__file__).with_name("abc.py"),
         Path(__file__).with_name("_smc.py"),
+        Path(__file__).with_name("_history.py"),
         Path(__file__).with_name("_evaluate.py"),
         Path(__file__).with_name("_worker_inputs.py"),
         Path(__file__).with_name("_proposals.py"),
