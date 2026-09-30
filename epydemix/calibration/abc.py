@@ -1,10 +1,12 @@
 import copy
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
+from .._execution import executor_context, map_tasks
 from ..utils.abc_smc_utils import (
     DefaultPerturbationContinuous,
     DefaultPerturbationDiscrete,
@@ -275,18 +277,27 @@ class ABCSampler:
         top_fraction: float = 0.05,
         Nsim: int = 100,
         verbose: bool = True,
+        n_workers: Optional[int] = None,
+        executor: Optional[ProcessPoolExecutor] = None,
     ) -> CalibrationResults:
         """
         Run ABC top fraction selection.
 
-        Runs Nsim simulations from the prior and keeps those whose distance is within
-        the top_fraction quantile.
+        Runs all Nsim simulations from the prior as an independent batch, then keeps
+        those whose distance is within the top_fraction quantile. n_workers or executor
+        controls parallel execution of the batch.
 
         Args:
             top_fraction (float, optional): Fraction of best-fitting simulations to keep, in (0, 1].
                 Default is 0.05.
             Nsim (int, optional): Number of simulations to run. Default is 100.
             verbose (bool, optional): Whether to print progress. Default is True.
+            n_workers (int, optional): Number of worker processes, at most the detected CPU capacity.
+                None runs in the calling process. Negative values use
+                max(1, available_cpus + 1 + n_workers): -1 uses all CPUs, -2 all but one.
+                Zero is invalid. Default is None.
+            executor (ProcessPoolExecutor, optional): Caller-owned worker pool, taking precedence
+                over n_workers. Default is None.
 
         Returns:
             CalibrationResults: Selected particles with uniform weights, stored as generation 0.
@@ -294,6 +305,7 @@ class ABCSampler:
         Raises:
             ValueError: If Nsim is not positive or top_fraction is not in (0, 1].
         """
+        # Validations
         if Nsim < 1 or not 0 < top_fraction <= 1:
             raise ValueError("Nsim must be positive and top_fraction must be in (0, 1]")
         if verbose:
@@ -309,15 +321,18 @@ class ABCSampler:
                     f"({completed / Nsim * 100:.1f}%)"
                 )
 
-        results = _evaluate.run_particle_evaluations(
-            self._get_particle_inputs(),
-            self.priors,
-            self.rng,
-            self._seed_requested,
-            n_evaluations=Nsim,
-            epsilon=None,
-            progress=progress if verbose else None,
-        )["accepted_results"]
+        # Evaluate the fixed set of candidates before selecting by distance
+        with executor_context(n_workers, executor) as pool:
+            evaluation = _evaluate.run_particle_evaluations(
+                self._get_particle_inputs(),
+                self.priors,
+                self.rng,
+                self._seed_requested,
+                n_evaluations=Nsim,
+                pool=pool,
+                progress=progress if verbose else None,
+            )
+        results = evaluation["accepted_results"]
         distances = np.array([r["distance"] for r in results])
         threshold = np.quantile(distances, top_fraction)
         mask = distances <= threshold
@@ -374,9 +389,14 @@ class ABCSampler:
         generation: Optional[int] = None,
         scenario_id: str = "baseline",
         rng: Optional[Any] = None,
+        n_workers: Optional[int] = None,
+        executor: Optional[ProcessPoolExecutor] = None,
     ) -> CalibrationResults:
         """
         Run projections using parameters sampled from the posterior distribution.
+
+        Run all iterations as independent simulations and return them in input order.
+        n_workers or executor controls parallel execution of this fixed-size batch.
 
         Args:
             parameters: Dictionary of parameters for the projections
@@ -392,72 +412,74 @@ class ABCSampler:
                 sampler's own ``rng`` (so seeding the ``ABCSampler`` already makes its
                 projections reproducible). Pass ``rng`` explicitly only to override
                 this, e.g. to draw an independent ensemble from the same calibration.
+            n_workers: Number of parallel workers, at most the detected CPU capacity.
+                None for sequential execution. Negative values use
+                max(1, available_cpus + 1 + n_workers): -1 uses all CPUs, -2 all but one.
+                Zero is invalid. Uses the same CPU/thread limits as calibrate.
+            executor: User-provided ProcessPoolExecutor (takes precedence over n_workers).
 
         Returns:
             CalibrationResults: A new CalibrationResults object containing the original results plus the new projections
         """
+        with executor_context(n_workers, executor) as pool:
+            # Get posterior distribution and weights from specified generation
+            posterior = self.results.get_posterior_distribution(generation)
+            weights = self.results.get_weights(generation)
 
-        # Get posterior distribution and weights from specified generation
-        posterior = self.results.get_posterior_distribution(generation)
-        weights = self.results.get_weights(generation)
+            # Determine the seed source and whether to seed the simulation. Precedence:
+            # this call's rng= arg, then an "rng" key in the projection parameters, then
+            # the sampler's own rng, so seeding the ABCSampler makes calibration and
+            # projections reproducible as a set.
+            # If none of these was seeded, projections run unseeded and no rng is injected.
+            if rng is not None:
+                seed_source, inject_rng = rng, True
+            elif "rng" in parameters:
+                seed_source, inject_rng = parameters["rng"], True
+            elif self._seed_requested:
+                seed_source, inject_rng = self.rng, True
+            else:
+                seed_source, inject_rng = None, False
 
-        # Determine the seed source and whether to seed the simulation. Precedence:
-        # this call's rng= arg, then an "rng" key in the projection parameters, then
-        # the sampler's own rng, so seeding the ABCSampler makes calibration and
-        # projections reproducible as a set.
-        # If none of these was seeded, projections run unseeded and no rng is injected.
-        if rng is not None:
-            seed_source, inject_rng = rng, True
-        elif "rng" in parameters:
-            seed_source, inject_rng = parameters["rng"], True
-        elif self._seed_requested:
-            seed_source, inject_rng = self.rng, True
-        else:
-            seed_source, inject_rng = None, False
+            # Build a fixed child rng per iteration (trajectory) via spawn_key, so paired
+            # scenarios (two run_projections calls with the same seed) get identical
+            # children. Deriving from the seed's entropy also makes this independent of
+            # how far the sampler's rng was advanced during calibration.
+            base_bit_generator = np.random.default_rng(seed_source).bit_generator
+            # ``bit_generator.seed_seq`` is public only since NumPy 1.25; fall back to the
+            # private backing attribute on older NumPy (e.g. the 1.24.x that ships with
+            # Python 3.8).
+            base_seed_seq = getattr(base_bit_generator, "seed_seq", None)
+            if base_seed_seq is None:
+                base_seed_seq = base_bit_generator._seed_seq
+            posterior_samples = {}
 
-        # Build a fixed child rng per iteration (trajectory) via spawn_key, so paired
-        # scenarios (two run_projections calls with the same seed) get identical
-        # children. Deriving from the seed's entropy also makes this independent of
-        # how far the sampler's rng was advanced during calibration.
-        base_bit_generator = np.random.default_rng(seed_source).bit_generator
-        # ``bit_generator.seed_seq`` is public only since NumPy 1.25; fall back to the
-        # private backing attribute on older NumPy (e.g. the 1.24.x that ships with
-        # Python 3.8).
-        base_seed_seq = getattr(base_bit_generator, "seed_seq", None)
-        if base_seed_seq is None:
-            base_seed_seq = base_bit_generator._seed_seq
-        # Run projections and store results
-        projections, posterior_samples = [], {}
-        for i in range(iterations):
-            # Each iteration (trajectory) uses its own child rng
-            rng_i = rng_for_index(base_seed_seq, i)
+            def iter_projection_arguments():
+                for i in range(iterations):
+                    rng_i = rng_for_index(base_seed_seq, i)
+                    idx = rng_i.choice(len(posterior), p=weights / weights.sum())
 
-            # Sample from posterior according to weights
-            idx = rng_i.choice(len(posterior), p=weights / weights.sum())
-            posterior_sample = posterior.iloc[idx]
+                    # Sample from posterior with index
+                    posterior_sample = posterior.iloc[idx]
+                    for key, value in posterior_sample.items():
+                        posterior_samples.setdefault(key, []).append(value)
+                    proj_params = {**parameters, **posterior_sample}
 
-            for k in posterior_sample.keys():
-                if k not in posterior_samples:
-                    posterior_samples[k] = []
-                posterior_samples[k].append(posterior_sample[k])
+                    # Set the trajectory RNG last so it overrides any parameter seed.
+                    if inject_rng:
+                        proj_params["rng"] = rng_i
+                    yield self.simulation_function, proj_params
 
-            proj_params = parameters.copy()
-            proj_params.update(posterior_sample)
-            # Set rng last so this iteration's child overrides any "rng" already in
-            # parameters.
-            if inject_rng:
-                proj_params["rng"] = rng_i
-            result = _evaluate.simulate_projection(
-                self.simulation_function, proj_params
+            # Run all projection simulations and preserve their input order
+            projections = map_tasks(
+                pool, _evaluate.simulate_projection, iter_projection_arguments()
             )
-            projections.append(result)
 
-        self.results.projections[scenario_id] = projections
-        self.results.projection_parameters[scenario_id] = pd.DataFrame(
-            posterior_samples
-        )
+            self.results.projections[scenario_id] = projections
+            self.results.projection_parameters[scenario_id] = pd.DataFrame(
+                posterior_samples
+            )
 
-        return copy.deepcopy(self.results)
+            return copy.deepcopy(self.results)
 
     def _execute_smc(
         self,

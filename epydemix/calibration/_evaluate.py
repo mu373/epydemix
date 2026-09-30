@@ -6,9 +6,11 @@ from itertools import islice
 
 import numpy as np
 
+from .._execution import map_tasks, single_threaded
 from ._proposals import ProposalSequence
 
 
+@single_threaded
 def run_particle_evaluations(
     inputs,
     priors,
@@ -19,6 +21,7 @@ def run_particle_evaluations(
     n_evaluations=None,
     epsilon=None,
     scheduler=None,
+    pool=None,
     start_time=None,
     max_time=None,
     total_simulations_budget=None,
@@ -80,21 +83,29 @@ def run_particle_evaluations(
         deadline,
     )
     # Prepare the evaluator and its inputs
-    evaluate, arguments = build_particle_tasks(inputs, candidates, inclusive=inclusive)
+    evaluate, arguments = build_particle_tasks(
+        pool, inputs, candidates, inclusive=inclusive
+    )
 
     if n_evaluations is not None:
         # Evaluate a fixed number of candidates and preserve their input order
         count = (
             min(n_evaluations, remaining) if remaining is not None else n_evaluations
         )
-        results, accepted = [], []
-        for args in islice(arguments, count):
-            result = evaluate(*args)
-            results.append(result)
-            if result["accepted"]:
-                accepted.append(result)
-            if progress is not None:
-                progress(len(results), len(accepted))
+        accepted_count = 0
+
+        def report(completed, result):
+            nonlocal accepted_count
+            accepted_count += int(result["accepted"])
+            progress(completed, accepted_count)
+
+        results = map_tasks(
+            pool,
+            evaluate,
+            islice(arguments, count),
+            on_completed=report if progress is not None else None,
+        )
+        accepted = [result for result in results if result["accepted"]]
         return {"accepted_results": accepted, "n_simulations": len(results)}
 
     # Evaluate until enough candidates are accepted or a limit is reached
@@ -108,7 +119,7 @@ def run_particle_evaluations(
     )
 
 
-def build_particle_tasks(inputs, candidates, *, inclusive=False):
+def build_particle_tasks(executor, inputs, candidates, *, inclusive=False):
     """Attach fixed model inputs to each candidate for evaluation."""
     function, parameters, names, observed, distance = inputs
     arguments = (
@@ -118,6 +129,7 @@ def build_particle_tasks(inputs, candidates, *, inclusive=False):
     return partial(evaluate_particle, inclusive=inclusive), arguments
 
 
+@single_threaded
 def evaluate_particle(
     simulation_function,
     parameters,
@@ -182,6 +194,7 @@ def evaluate_particle(
     }
 
 
+@single_threaded
 def simulate_projection(simulation_function, proj_params):
     """
     Run a single projection simulation.
