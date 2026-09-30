@@ -1,12 +1,16 @@
 import copy
+import logging
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from time import perf_counter
 from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 
+from .. import _logging
 from .._execution import executor_context, map_tasks
 from ..utils.random_utils import rng_for_index
 from . import _evaluate, _smc, _worker_inputs
@@ -235,34 +239,39 @@ class ABCSampler:
         Raises:
             TypeError: If executor is not a ProcessPoolExecutor.
         """
-        validate_parallel_strategy(parallel_strategy)
-        # Prepare the SMC run with model inputs, priors, and RNG.
-        smc_run = _smc.SMCRun(
-            self._get_particle_inputs(),
-            self.priors,
-            self.rng,
-            self._seed_requested,
-        )
-        try:
-            with self._calibration_executor(n_workers, executor) as pool:
-                scheduler = create_particle_scheduler(pool, parallel_strategy)
-                # Run SMC and get CalibrationResults
-                return smc_run.execute(
-                    num_particles=num_particles,
-                    num_generations=num_generations,
-                    epsilon_schedule=epsilon_schedule,
-                    epsilon_quantile_level=epsilon_quantile_level,
-                    minimum_epsilon=minimum_epsilon,
-                    max_time=max_time,
-                    total_simulations_budget=total_simulations_budget,
-                    perturbations=perturbations,
-                    verbose=verbose,
-                    pool=pool,
-                    scheduler=scheduler,
-                )
-        finally:
-            # Preserve the run generator even after a failure.
-            self.rng = smc_run.rng
+        with self._calibration_run("smc", parallel_strategy) as metrics:
+            validate_parallel_strategy(parallel_strategy)
+            # Prepare the SMC run with model inputs, priors, and RNG.
+            smc_run = _smc.SMCRun(
+                self._get_particle_inputs(),
+                self.priors,
+                self.rng,
+                self._seed_requested,
+                metrics=metrics,
+            )
+            try:
+                with self._calibration_executor(n_workers, executor) as pool:
+                    metrics["workers"] = getattr(pool, "_max_workers", None)
+                    scheduler = create_particle_scheduler(pool, parallel_strategy)
+                    # Run SMC and get CalibrationResults
+                    results = smc_run.execute(
+                        num_particles=num_particles,
+                        num_generations=num_generations,
+                        epsilon_schedule=epsilon_schedule,
+                        epsilon_quantile_level=epsilon_quantile_level,
+                        minimum_epsilon=minimum_epsilon,
+                        max_time=max_time,
+                        total_simulations_budget=total_simulations_budget,
+                        perturbations=perturbations,
+                        verbose=verbose,
+                        pool=pool,
+                        scheduler=scheduler,
+                    )
+                    results.calibration_params["execution_metrics"] = metrics
+                    return results
+            finally:
+                # Preserve the run generator even after a failure.
+                self.rng = smc_run.rng
 
     def run_rejection(
         self,
@@ -310,57 +319,91 @@ class ABCSampler:
             ValueError: If progress_update_interval is not positive.
         """
         # Validations
-        validate_parallel_strategy(parallel_strategy)
-        if progress_update_interval < 1:
-            raise ValueError("progress_update_interval must be positive")
-        if verbose:
-            print(
-                f"Starting ABC rejection sampling with {num_particles} particles "
-                f"and epsilon threshold {epsilon}"
-            )
-        last_print = 0
-
-        def progress(completed, accepted):
-            # Report completed simulations in sequential or parallel execution.
-            nonlocal last_print
-            if verbose and completed - last_print >= progress_update_interval:
-                last_print = completed
+        with self._calibration_run("rejection", parallel_strategy) as metrics:
+            validate_parallel_strategy(parallel_strategy)
+            if progress_update_interval < 1:
+                raise ValueError("progress_update_interval must be positive")
+            if verbose:
                 print(
-                    f"\tSimulations: {completed}, Accepted: {accepted}, "
-                    f"Acceptance rate: {accepted / completed * 100:.2f}%"
+                    f"Starting ABC rejection sampling with {num_particles} particles "
+                    f"and epsilon threshold {epsilon}"
                 )
+            last_print = 0
 
-        with self._calibration_executor(n_workers, executor) as pool:
-            scheduler = create_particle_scheduler(pool, parallel_strategy)
-            # Prepare and evaluate candidates until enough are accepted
-            result = _evaluate.run_particle_evaluations(
-                self._get_particle_inputs(),
-                self.priors,
-                self.rng,
-                self._seed_requested,
-                n_accepted=num_particles,
-                epsilon=epsilon,
-                pool=pool,
-                scheduler=scheduler,
-                start_time=datetime.now(),
-                max_time=max_time,
-                total_simulations_budget=total_simulations_budget,
-                progress=progress,
+            def progress(completed, accepted):
+                # Report completed simulations in sequential or parallel execution.
+                nonlocal last_print
+                if completed - last_print >= progress_update_interval:
+                    last_print = completed
+                    kept = min(accepted, num_particles)
+                    if verbose:
+                        print(
+                            f"\tSimulations: {completed}, Accepted: {kept}, Matched: {accepted}, "
+                            f"Acceptance rate: {accepted / max(completed, 1) * 100:.2f}%"
+                        )
+                    _logging.emit(
+                        "progress",
+                        run_id=metrics["run_id"],
+                        generation=0,
+                        simulations=completed,
+                        matched=accepted,
+                        collected=kept,
+                    )
+
+            collected_at = perf_counter()
+            with self._calibration_executor(n_workers, executor) as pool:
+                metrics["workers"] = getattr(pool, "_max_workers", None)
+                scheduler = create_particle_scheduler(pool, parallel_strategy)
+                # Prepare and evaluate candidates until enough are accepted
+                result = _evaluate.run_particle_evaluations(
+                    self._get_particle_inputs(),
+                    self.priors,
+                    self.rng,
+                    self._seed_requested,
+                    n_accepted=num_particles,
+                    epsilon=epsilon,
+                    pool=pool,
+                    scheduler=scheduler,
+                    start_time=datetime.now(),
+                    max_time=max_time,
+                    total_simulations_budget=total_simulations_budget,
+                    progress=progress
+                    if verbose or _logging.logger.isEnabledFor(logging.INFO)
+                    else None,
+                )
+            accepted = result["accepted_results"]
+            metrics["stop_reason"] = result["stop_reason"]
+            generation = {
+                "generation": 0,
+                "epsilon": float(epsilon),
+                "completed": len(accepted) == num_particles,
+                "simulations": result["n_simulations"],
+                "matched": result["n_matched"],
+                "retained": len(accepted),
+                "surplus_accepted": result["n_matched"] - len(accepted),
+                "drained": result["n_drained"],
+                "collection_seconds": perf_counter() - collected_at,
+                "weights_seconds": 0.0,
+                "generation_seconds": perf_counter() - collected_at,
+                "stop_reason": result["stop_reason"],
+            }
+            metrics["generations"].append(generation)
+            _logging.emit("generation_finished", run_id=metrics["run_id"], **generation)
+            completed = result["n_simulations"]
+            if verbose:
+                print(
+                    f"\tFinal: {len(accepted)} particles accepted from {completed} simulations "
+                    f"({len(accepted) / max(completed, 1) * 100:.2f}% acceptance rate)"
+                )
+            results = self._create_results(
+                "rejection",
+                pd.DataFrame([r["params"] for r in accepted], columns=self.param_names),
+                np.ones(len(accepted)) / max(len(accepted), 1),
+                np.array([r["distance"] for r in accepted]),
+                [r["simulation"] for r in accepted],
             )
-        accepted = result["accepted_results"]
-        completed = result["n_simulations"]
-        if verbose:
-            print(
-                f"\tFinal: {len(accepted)} particles accepted from {completed} simulations "
-                f"({len(accepted) / max(completed, 1) * 100:.2f}% acceptance rate)"
-            )
-        return self._create_results(
-            "rejection",
-            pd.DataFrame([r["params"] for r in accepted], columns=self.param_names),
-            np.ones(len(accepted)) / max(len(accepted), 1),
-            np.array([r["distance"] for r in accepted]),
-            [r["simulation"] for r in accepted],
-        )
+            results.calibration_params["execution_metrics"] = metrics
+            return results
 
     def run_top_fraction(
         self,
@@ -396,53 +439,86 @@ class ABCSampler:
             ValueError: If Nsim is not positive or top_fraction is not in (0, 1].
         """
         # Validations
-        if Nsim < 1 or not 0 < top_fraction <= 1:
-            raise ValueError("Nsim must be positive and top_fraction must be in (0, 1]")
-        if verbose:
-            print(
-                f"Starting ABC top fraction selection with {Nsim} simulations "
-                f"and top {top_fraction * 100:.1f}% selected"
-            )
-
-        def progress(completed, accepted):
-            if completed % max(1, Nsim // 10) == 0 or completed == Nsim:
+        with self._calibration_run("top_fraction", "fixed") as metrics:
+            if Nsim < 1 or not 0 < top_fraction <= 1:
+                raise ValueError(
+                    "Nsim must be positive and top_fraction must be in (0, 1]"
+                )
+            if verbose:
                 print(
-                    f"\tProgress: {completed}/{Nsim} simulations completed "
-                    f"({completed / Nsim * 100:.1f}%)"
+                    f"Starting ABC top fraction selection with {Nsim} simulations "
+                    f"and top {top_fraction * 100:.1f}% selected"
                 )
 
-        # Evaluate the fixed set of candidates before selecting by distance
-        with self._calibration_executor(n_workers, executor) as pool:
-            evaluation = _evaluate.run_particle_evaluations(
-                self._get_particle_inputs(),
-                self.priors,
-                self.rng,
-                self._seed_requested,
-                n_evaluations=Nsim,
-                pool=pool,
-                progress=progress if verbose else None,
+            def progress(completed, accepted):
+                if completed % max(1, Nsim // 10) == 0 or completed == Nsim:
+                    if verbose:
+                        print(
+                            f"\tProgress: {completed}/{Nsim} simulations completed "
+                            f"({completed / Nsim * 100:.1f}%)"
+                        )
+                    _logging.emit(
+                        "progress",
+                        run_id=metrics["run_id"],
+                        generation=0,
+                        simulations=completed,
+                    )
+
+            # Evaluate the fixed set of candidates before selecting by distance
+            collected_at = perf_counter()
+            with self._calibration_executor(n_workers, executor) as pool:
+                metrics["workers"] = getattr(pool, "_max_workers", None)
+                evaluation = _evaluate.run_particle_evaluations(
+                    self._get_particle_inputs(),
+                    self.priors,
+                    self.rng,
+                    self._seed_requested,
+                    n_evaluations=Nsim,
+                    pool=pool,
+                    progress=progress
+                    if verbose or _logging.logger.isEnabledFor(logging.INFO)
+                    else None,
+                )
+            collection_seconds = perf_counter() - collected_at
+            results = evaluation["accepted_results"]
+            distances = np.array([r["distance"] for r in results])
+            with np.errstate(invalid="ignore"):
+                threshold = np.quantile(distances, top_fraction)
+            if np.isnan(threshold):
+                raise ValueError("Undefined distance quantile; use finite distances")
+            mask = distances <= threshold
+            generation = {
+                "generation": 0,
+                "epsilon": float(threshold),
+                "completed": True,
+                "simulations": evaluation["n_simulations"],
+                "matched": int(sum(mask)),
+                "retained": int(sum(mask)),
+                "surplus_accepted": 0,
+                "drained": 0,
+                "collection_seconds": collection_seconds,
+                "weights_seconds": 0.0,
+                "generation_seconds": perf_counter() - collected_at,
+                "stop_reason": "fixed_count",
+            }
+            metrics["generations"].append(generation)
+            _logging.emit("generation_finished", run_id=metrics["run_id"], **generation)
+            if verbose:
+                print(
+                    f"\tSelected {sum(mask)} particles (top {top_fraction * 100:.1f}%) "
+                    f"with distance threshold {threshold:.6f}"
+                )
+            results = self._create_results(
+                "top_fraction",
+                pd.DataFrame([r["params"] for r in results], columns=self.param_names)[
+                    mask
+                ],
+                np.ones(sum(mask)) / sum(mask),
+                distances[mask],
+                [r["simulation"] for r, keep in zip(results, mask) if keep],
             )
-        results = evaluation["accepted_results"]
-        distances = np.array([r["distance"] for r in results])
-        with np.errstate(invalid="ignore"):
-            threshold = np.quantile(distances, top_fraction)
-        if np.isnan(threshold):
-            raise ValueError("Undefined distance quantile; use finite distances")
-        mask = distances <= threshold
-        if verbose:
-            print(
-                f"\tSelected {sum(mask)} particles (top {top_fraction * 100:.1f}%) "
-                f"with distance threshold {threshold:.6f}"
-            )
-        return self._create_results(
-            "top_fraction",
-            pd.DataFrame([r["params"] for r in results], columns=self.param_names)[
-                mask
-            ],
-            np.ones(sum(mask)) / sum(mask),
-            distances[mask],
-            [r["simulation"] for r, keep in zip(results, mask) if keep],
-        )
+            results.calibration_params["execution_metrics"] = metrics
+            return results
 
     def _create_results(
         self,
@@ -474,6 +550,61 @@ class ABCSampler:
             observed_data=self.observed_data,
             priors=self.priors,
         )
+
+    @contextmanager
+    def _calibration_run(self, strategy, parallel_strategy):
+        """Own one call's ID, coarse metrics and terminal event independently of verbose.
+
+        Pool lifetime is included; calibrate's final result deepcopy is excluded.
+        Counts cover this invocation, including incomplete generations and drain.
+        Retained totals sum committed particles across this call's generations.
+        """
+        metrics = {
+            "run_id": str(uuid4()),
+            "strategy": strategy,
+            "parallel_strategy": parallel_strategy,
+            "workers": None,
+            "generations": [],
+            "stop_reason": "completed",
+        }
+        started = perf_counter()
+        _logging.emit(
+            "run_started",
+            **{
+                key: metrics[key]
+                for key in ("run_id", "strategy", "parallel_strategy", "workers")
+            },
+        )
+        try:
+            yield metrics
+        except BaseException as error:
+            _logging.emit(
+                "run_failed",
+                level=logging.ERROR,
+                run_id=metrics["run_id"],
+                strategy=strategy,
+                error_type=type(error).__name__,
+                elapsed_seconds=perf_counter() - started,
+            )
+            raise
+        else:
+            metrics["elapsed_seconds"] = perf_counter() - started
+            metrics["totals"] = {
+                field: sum(generation[field] for generation in metrics["generations"])
+                for field in (
+                    "simulations",
+                    "matched",
+                    "retained",
+                    "surplus_accepted",
+                    "drained",
+                )
+            }
+            _logging.emit(
+                "run_finished",
+                **{
+                    key: value for key, value in metrics.items() if key != "generations"
+                },
+            )
 
     @contextmanager
     def _calibration_executor(self, n_workers, executor):
