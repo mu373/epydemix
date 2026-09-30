@@ -19,7 +19,7 @@ def _distance_with_positional_names(observed, predicted, /):
     return 1.0
 
 
-@pytest.mark.parametrize("strategy", ["rejection", "top_fraction"])
+@pytest.mark.parametrize("strategy", ["rejection", "smc", "top_fraction"])
 def test_distance_callback_and_upstream_boundary_rules(strategy):
     """Check positional callback invocation and equality at acceptance thresholds.
 
