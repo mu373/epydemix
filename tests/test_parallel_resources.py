@@ -21,19 +21,15 @@ def _fake_cgroup(monkeypatch, tmp_path, kind, group, mount_root="/"):
     controller = "" if kind == "cgroup2" else "cpu,cpuacct"
     escaped_mount = str(mount).replace(" ", r"\040")
     metadata = {
-        "/proc/self/cgroup": f"0:{controller}:{group}\n",
-        "/proc/self/mountinfo": (
+        Path("/proc/self/cgroup"): f"0:{controller}:{group}\n",
+        Path("/proc/self/mountinfo"): (
             f"1 0 0:1 {mount_root} {escaped_mount} rw - {kind} cgroup rw,{controller}\n"
         ),
     }
     read_text = Path.read_text
 
     def read(path, *args, **kwargs):
-        return (
-            metadata[str(path)]
-            if str(path) in metadata
-            else read_text(path, *args, **kwargs)
-        )
+        return metadata[path] if path in metadata else read_text(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", read)
     monkeypatch.setattr(_execution.os, "cpu_count", lambda: 16)
