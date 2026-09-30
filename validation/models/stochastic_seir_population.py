@@ -1,3 +1,11 @@
+"""Independent binomial epidemic reference for validation comparisons.
+
+Use the supplied seed/Generator; global NumPy random state is never consumed.
+Trajectories cover the full configured grid, including extinction. Ensemble
+trials use independent child streams so their identity does not depend on Nsim.
+These are small comparison models, not calibration correctness oracles.
+"""
+
 import numpy as np
 
 
@@ -32,15 +40,19 @@ class StochasticSEIRAgeGroups:
         self.time_steps = time_steps
         self.num_groups = len(S0)  # Number of age groups
 
-    def simulate(self):
+    def simulate(self, rng=None):
         """
         Runs a single simulation of the SEIR model for the defined number of time steps with age groups.
+
+        Args:
+            rng (int, SeedSequence or Generator, optional): Source of all random draws.
 
         Returns:
             results (dict): A dictionary with keys 'S', 'E', 'I', 'R' containing lists of population sizes
                             at each time step for each compartment and age group.
         """
         # Initialize the compartments for each age group
+        rng = np.random.default_rng(rng)
         S = self.S0.copy()
         E = self.E0.copy()
         I = self.I0.copy()
@@ -54,22 +66,17 @@ class StochasticSEIRAgeGroups:
             results["I"].append(I.copy())
             results["R"].append(R.copy())
 
-            if (
-                np.sum(I) == 0 and np.sum(E) == 0
-            ):  # Stop if no more infected or exposed individuals
-                break
-
             # Compute new exposures for each age group
             new_exposures = np.zeros(self.num_groups, dtype=int)
             for i in range(self.num_groups):
                 # The force of infection for group i depends on contacts with all other groups
                 force_of_infection = np.sum(self.contact_matrix[i, :] * I / self.N)
                 infection_prob = 1 - np.exp(-self.beta * force_of_infection)
-                new_exposures[i] = np.random.binomial(S[i], infection_prob)
+                new_exposures[i] = rng.binomial(S[i], infection_prob)
 
             # Compute new infections and recoveries
-            new_infections = np.random.binomial(E, 1 - np.exp(-self.sigma))
-            new_recoveries = np.random.binomial(I, 1 - np.exp(-self.gamma))
+            new_infections = rng.binomial(E, 1 - np.exp(-self.sigma))
+            new_recoveries = rng.binomial(I, 1 - np.exp(-self.gamma))
 
             # Update compartments
             S -= new_exposures
@@ -79,46 +86,38 @@ class StochasticSEIRAgeGroups:
 
         return results
 
-    def run_simulations(self, Nsim, quantiles=[0.25, 0.5, 0.75]):
+    def run_simulations(self, Nsim, quantiles=(0.25, 0.5, 0.75), rng=None):
         """
         Runs the SEIR model simulation Nsim times and computes the specified quantiles.
 
         Args:
             Nsim (int): The number of simulations to run.
+            rng (int or Generator, optional): Seed for independent child trial streams.
             quantiles (list of float): A list of quantiles to compute (e.g., [0.25, 0.5, 0.75]).
 
         Returns:
             quantile_results (dict of dict): A dictionary of dictionaries where the outer key is the compartment ('S', 'E', 'I', 'R')
-                                             and the inner key is the quantile, each containing an array of shape (num_groups, time_steps).
+                                             and the inner key is the quantile, each containing an array of shape (time_steps, num_groups).
         """
         # Initialize lists to store all simulation results
+        if Nsim < 1:
+            raise ValueError("Nsim must be positive")
+        rng = np.random.default_rng(rng)
+        children = np.random.SeedSequence(
+            rng.integers(0, 2**32, size=4, dtype=np.uint32)
+        ).spawn(Nsim)
         all_S = []
         all_E = []
         all_I = []
         all_R = []
 
         # Run Nsim simulations and collect results
-        for _ in range(Nsim):
-            results = self.simulate()
+        for child in children:
+            results = self.simulate(rng=child)
             all_S.append(np.array(results["S"]))
             all_E.append(np.array(results["E"]))
             all_I.append(np.array(results["I"]))
             all_R.append(np.array(results["R"]))
-
-        # Find the longest simulation
-        max_len = max([result.shape[0] for result in all_S])
-
-        # Pad the trajectories with the last value to make them all the same length
-        for i in range(Nsim):
-            if all_S[i].shape[0] < max_len:
-                padding = [
-                    (0, max_len - all_S[i].shape[0]),
-                    (0, 0),
-                ]  # Only pad the time dimension
-                all_S[i] = np.pad(all_S[i], padding, mode="edge")
-                all_E[i] = np.pad(all_E[i], padding, mode="edge")
-                all_I[i] = np.pad(all_I[i], padding, mode="edge")
-                all_R[i] = np.pad(all_R[i], padding, mode="edge")
 
         # Convert lists to arrays to compute the quantiles
         all_S = np.array(all_S)
