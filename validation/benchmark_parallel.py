@@ -15,9 +15,13 @@ import os
 import platform
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Thread
 from time import perf_counter, sleep
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path.cwd()))
 
@@ -78,27 +82,119 @@ def make_sampler(model, payload_mib, seed):
     )
 
 
-def _profile_task(function, arguments):
+def _trace(directory, kind, started, **values):
+    """One file per PID avoids profiler queues/locks changing DYN scheduling."""
+    with (Path(directory) / f"{os.getpid()}.jsonl").open("a") as file:
+        file.write(
+            json.dumps(
+                dict(
+                    kind=kind,
+                    pid=os.getpid(),
+                    started=started,
+                    finished=perf_counter(),
+                    **values,
+                )
+            )
+            + "\n"
+        )
+
+
+class ProfileSimulation:
+    """Measure model callback time only in --profile; forward RNG unchanged."""
+
+    def __init__(self, function, directory):
+        self.function, self.directory = function, directory
+
+    def __call__(self, parameters):
+        started = perf_counter()
+        try:
+            return self.function(parameters)
+        finally:
+            _trace(self.directory, "simulation", started)
+
+
+def _profile_initializer(directory, initializer, initargs):
+    """Time real initialization and fresh-input restores in a disposable worker."""
+    from epydemix.calibration import _scheduler, _worker_inputs
+
+    started = perf_counter()
+    restore, loads = _worker_inputs.restore_worker_inputs, _scheduler.pickle.loads
+
+    def measured_restore():
+        start = perf_counter()
+        result = restore()
+        _trace(directory, "input_restore", start)
+        return result
+
+    def measured_loads(value):
+        start = perf_counter()
+        result = loads(value)
+        _trace(directory, "job_restore", start, bytes=len(value))
+        return result
+
+    _worker_inputs.restore_worker_inputs = measured_restore
+    # Limit the hook to this module's job restores, excluding unrelated pickle IPC.
+    _scheduler.pickle = SimpleNamespace(loads=measured_loads)
+    if initializer is not None:
+        initializer(*initargs)
+    _trace(directory, "initializer", started)
+
+
+def _profile_task(directory, function, arguments):
     """Time one process task, which may contain many DYN evaluations."""
     start = perf_counter()
+    if getattr(function, "__name__", None) == "_evaluate_in_worker":
+        state = arguments[1]
+        claim = state.report_and_claim
+
+        def measured_claim(*args):
+            started = perf_counter()
+            result = claim(*args)
+            _trace(directory, "scheduler_rpc", started)
+            return result
+
+        state.report_and_claim = measured_claim
     result = function(*arguments)
     return result, {"pid": os.getpid(), "started": start, "finished": perf_counter()}
 
 
-def install_dispatch_profile():
+def install_dispatch_profile(directory):
     """Patch only this disposable audit process; preserve the library result API."""
     from concurrent.futures import ProcessPoolExecutor
     from concurrent.futures.process import _CallItem
     from multiprocessing.reduction import ForkingPickler
 
+    from epydemix.calibration import _worker_inputs
+
     report = {"tasks": [], "serialization": []}
     submit, dumps = ProcessPoolExecutor.submit, ForkingPickler.dumps
+    initialize = ProcessPoolExecutor.__init__
+    save_inputs = _worker_inputs.save_worker_inputs
+
+    def measured_save_inputs(path, inputs):
+        started = perf_counter()
+        save_inputs(path, inputs)
+        report["serialization"].append(
+            {
+                "kind": "input_snapshot",
+                "seconds": perf_counter() - started,
+                "bytes": path.stat().st_size,
+            }
+        )
+
+    def measured_initialize(pool, *args, initializer=None, initargs=(), **kwargs):
+        initialize(
+            pool,
+            *args,
+            initializer=partial(_profile_initializer, directory, initializer, initargs),
+            **kwargs,
+        )
 
     def measured_submit(pool, function, *arguments, **kwargs):
         if kwargs:
             raise ValueError("Audit expects positional task arguments")
         submitted = perf_counter()
-        future = submit(pool, _profile_task, function, arguments)
+        future = submit(pool, _profile_task, directory, function, arguments)
         original_result = future.result
         recorded = False
 
@@ -106,7 +202,14 @@ def install_dispatch_profile():
             nonlocal recorded
             output, timing = original_result(*args, **kwargs)
             if not recorded:
-                report["tasks"].append(dict(timing, submitted=submitted))
+                report["tasks"].append(
+                    dict(
+                        timing,
+                        submitted=submitted,
+                        retrieved=perf_counter(),
+                        function=getattr(function, "__name__", type(function).__name__),
+                    )
+                )
                 recorded = True
             return output
 
@@ -132,6 +235,8 @@ def install_dispatch_profile():
         return payload
 
     ProcessPoolExecutor.submit = measured_submit
+    ProcessPoolExecutor.__init__ = measured_initialize
+    _worker_inputs.save_worker_inputs = measured_save_inputs
     ForkingPickler.dumps = staticmethod(measured_dumps)
     return report
 
@@ -159,9 +264,13 @@ def child(args):
         logger = logging.getLogger("epydemix.calibration")
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
-    profile = install_dispatch_profile() if args.profile else None
+    trace_directory = TemporaryDirectory(prefix="epydemix-profile-")
+    profile = install_dispatch_profile(trace_directory.name) if args.profile else None
     sampler = make_sampler(args.model, args.payload_mib, args.seed)
-    started = perf_counter()
+    if args.profile:
+        sampler.simulation_function = ProfileSimulation(
+            sampler.simulation_function, trace_directory.name
+        )
     if args.strategy == "top_fraction":
         options = {"Nsim": args.particles, "top_fraction": 0.5}
     elif args.strategy == "smc":
@@ -172,13 +281,31 @@ def child(args):
         }
     else:
         options = {"epsilon": float("inf"), "num_particles": args.particles}
-    result = sampler.calibrate(
-        strategy=args.strategy,
-        n_workers=args.worker or None,
-        verbose=False,
-        **options,
-    )
-    elapsed = perf_counter() - started
+    pool = ProcessPoolExecutor(max_workers=args.worker) if args.reuse_pool else None
+    warmup_seconds = None
+    if pool is not None:
+        warmup_started = perf_counter()
+        warm = make_sampler(args.model, args.payload_mib, args.seed).calibrate(
+            strategy=args.strategy, executor=pool, verbose=False, **options
+        )
+        warm_fingerprint = fingerprint(warm)
+        del warm
+        warmup_seconds = perf_counter() - warmup_started
+    started = perf_counter()
+    try:
+        result = sampler.calibrate(
+            strategy=args.strategy,
+            n_workers=args.worker or None,
+            executor=pool,
+            verbose=False,
+            **options,
+        )
+    finally:
+        # Caller-owned shutdown is outside the measured calibration interval.
+        finished = perf_counter()
+        if pool is not None:
+            pool.shutdown()
+    elapsed = finished - started
     metrics = result.calibration_params["execution_metrics"]
     phases = [
         {
@@ -190,6 +317,60 @@ def child(args):
     ]
     fingerprint_started = perf_counter()
     output_hash = fingerprint(result)
+    fingerprint_seconds = perf_counter() - fingerprint_started
+    if pool is not None:
+        assert warm_fingerprint == output_hash
+    if profile is not None:
+        events = [
+            json.loads(line)
+            for path in Path(trace_directory.name).glob("*.jsonl")
+            for line in path.read_text().splitlines()
+        ]
+        profile["worker_events"] = events
+        measured_simulations = [e for e in events if e["kind"] == "simulation"]
+        assert len(measured_simulations) == metrics["totals"]["simulations"]
+        profile["simulation_seconds"] = sum(
+            e["finished"] - e["started"] for e in measured_simulations
+        )
+        # Task wall time includes proposals, distance, restores and RPC, not pure wait.
+        profile["worker_task_non_simulation_seconds"] = (
+            (
+                sum(
+                    task["finished"] - task["started"]
+                    for task in profile["tasks"]
+                    if task["started"] >= started
+                )
+                - profile["simulation_seconds"]
+            )
+            if args.worker
+            else None
+        )
+        submissions = [task["submitted"] for task in profile["tasks"]]
+        profile["worker_ready_after_first_submit_seconds"] = (
+            [
+                event["finished"] - min(submissions)
+                for event in events
+                if event["kind"] == "initializer"
+            ]
+            if submissions
+            else []
+        )
+        loops = sorted(
+            (
+                task
+                for task in profile["tasks"]
+                if task["function"] == "_evaluate_in_worker"
+                and task["started"] >= started
+            ),
+            key=lambda task: task["submitted"],
+        )
+        profile["dynamic_batches_finish_spread_seconds"] = [
+            max(task["finished"] for task in batch)
+            - min(task["finished"] for task in batch)
+            for index in range(0, len(loops), args.worker or 1)
+            for batch in [loops[index : index + (args.worker or 1)]]
+        ]
+    trace_directory.cleanup()
     print(
         json.dumps(
             _json_values(
@@ -204,6 +385,8 @@ def child(args):
                     "start_method": args.start_method,
                     "profile": args.profile,
                     "log_json": args.log_json,
+                    "pool_mode": "reused_external" if args.reuse_pool else "new_owned",
+                    "warmup_seconds": warmup_seconds,
                     "elapsed_seconds": elapsed,
                     "calibration_started": started,
                     "calibration_finished": started + elapsed,
@@ -214,7 +397,7 @@ def child(args):
                     "weight_and_other_seconds": elapsed
                     - sum(p["seconds"] for p in phases),
                     "fingerprint": output_hash,
-                    "fingerprint_seconds": perf_counter() - fingerprint_started,
+                    "fingerprint_seconds": fingerprint_seconds,
                     "dispatch": profile,
                     "benchmark_sha256": hashlib.sha256(
                         Path(__file__).read_bytes()
@@ -268,6 +451,8 @@ def main(args):
                 command.append("--profile")
             if args.log_json:
                 command.append("--log-json")
+            if args.reuse_pool:
+                command.append("--reuse-pool")
             samples, cpu_totals = [], {}
             with subprocess.Popen(
                 command, stdout=subprocess.PIPE, text=True
@@ -339,6 +524,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("--profile", action="store_true")
     parser.add_argument(
+        "--reuse-pool",
+        action="store_true",
+        help="Warm an external pool with an identical untimed calibration",
+    )
+    parser.add_argument(
         "--log-json",
         action="store_true",
         help="Send application-configured JSON events to stderr",
@@ -346,4 +536,8 @@ if __name__ == "__main__":
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--worker", type=int, default=0, help=argparse.SUPPRESS)
     options = parser.parse_args()
+    if options.reuse_pool and (
+        options.worker == 0 if options.child else 0 in options.workers
+    ):
+        parser.error("--reuse-pool requires positive worker counts")
     child(options) if options.child else main(options)
