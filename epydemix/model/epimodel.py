@@ -1,11 +1,16 @@
 import copy
 import inspect
+import operator
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 from typing import Any, Callable, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
 
+from .._execution import executor_context, map_tasks, single_threaded
 from ..population.population import Population, load_epydemix_population
+from ..utils.random_utils import rng_for_index
 from ..utils.utils import (
     apply_initial_conditions,
     apply_overrides,
@@ -771,9 +776,17 @@ class EpiModel:
         fill_method: Optional[str] = "ffill",
         apply_linear_approximation: bool = False,
         rng: Optional[Union[int, np.random.Generator]] = None,
+        n_workers: Optional[int] = None,
+        executor: Optional[ProcessPoolExecutor] = None,
     ) -> SimulationResults:
         """
         Simulates the epidemic model multiple times over the given time period.
+
+        Each trial uses an independent RNG stream and a fresh copy of the model.
+        Results preserve trial order and are identical across worker counts when
+        custom transition functions use only their inputs. Independent streams
+        change seeded trajectories from the previous shared-RNG implementation.
+        A supplied Generator advances by one fixed-size seed draw per nonempty call.
 
         Args:
             start_date (str or pd.Timestamp): The start date of the simulation. Default is "2020-01-01".
@@ -788,31 +801,44 @@ class EpiModel:
             fill_method (str, optional): Method to fill NaN values after resampling. Default is "ffill".
             apply_linear_approximation (bool, optional): Whether to use linear approximation to the probabilities. Default is False.
             rng (int or np.random.Generator, optional): Seed or random number generator. Default is None.
+            n_workers (int, optional): Number of worker processes, at most the detected
+                CPU capacity. None runs sequentially. Negative values use
+                max(1, available_cpus + 1 + n_workers): -1 uses all CPUs, -2 all but one.
+                Zero is invalid.
+            executor (ProcessPoolExecutor, optional): Caller-owned process pool; takes
+                precedence over n_workers and remains open. Parallel execution requires
+                the model and custom transition functions to be picklable.
 
         Returns:
             SimulationResults: An object containing all simulation trajectories.
 
         Raises:
+            ValueError: If Nsim is negative or the worker count is invalid.
+            TypeError: If Nsim is not an integer or executor is not a process pool.
             RuntimeError: If the simulation fails.
         """
 
-        rng = np.random.default_rng(rng)
-
-        # Run multiple simulations and collect trajectories
-        try:
-            # Pre-compute simulation dates, initial conditions, and contact matrices to speed up the simulation
-            if initial_conditions_dict is None:
-                initial_conditions_dict = self.create_default_initial_conditions(
-                    percentage_in_agents=percentage_in_agents
-                )
-            simulation_dates = compute_simulation_dates(start_date, end_date, dt=dt)
-            self.compute_contact_reductions(simulation_dates)
-            contact_matrices = [self.Cs[date] for date in simulation_dates]
-
-            trajectories = []
-            for _ in range(Nsim):
-                trajectory = simulate(
-                    self,
+        # Validate execution settings before changing model or RNG state
+        if isinstance(Nsim, bool):
+            raise ValueError("Nsim must be a non-negative integer")
+        Nsim = operator.index(Nsim)
+        if Nsim < 0:
+            raise ValueError("Nsim must be a non-negative integer")
+        with executor_context(n_workers, executor) as pool:
+            rng = np.random.default_rng(rng)
+            if Nsim == 0:
+                # Return an empty SimulationResults with parameters
+                return SimulationResults(trajectories=[], parameters=self.parameters)
+            try:
+                # Prepare dates, initial conditions, and contacts once for all trials
+                if initial_conditions_dict is None:
+                    initial_conditions_dict = self.create_default_initial_conditions(
+                        percentage_in_agents=percentage_in_agents
+                    )
+                simulation_dates = compute_simulation_dates(start_date, end_date, dt=dt)
+                self.compute_contact_reductions(simulation_dates)
+                contact_matrices = [self.Cs[date] for date in simulation_dates]
+                parameters = dict(
                     start_date=start_date,
                     end_date=end_date,
                     dt=dt,
@@ -823,16 +849,38 @@ class EpiModel:
                     resample_aggregation_transitions=resample_aggregation_transitions,
                     fill_method=fill_method,
                     apply_linear_approximation=apply_linear_approximation,
-                    rng=rng,
                     simulation_dates=simulation_dates,
                     contact_matrices=contact_matrices,
                 )
-                trajectories.append(trajectory)
-        except Exception as e:
-            raise RuntimeError(f"Simulation failed: {str(e)}") from e
 
-        # Return SimulationResults with all trajectories
+                # Assign an independent RNG to each trial, regardless of worker count
+                seed_sequence = np.random.SeedSequence(
+                    rng.integers(0, 2**32, size=4, dtype=np.uint32)
+                )
+                arguments = ((rng_for_index(seed_sequence, i),) for i in range(Nsim))
+
+                # Run simulations in parallel with the process executor.
+                # If pool is None, run sequentially in the calling process.
+                # Collect trajectories in input order, regardless of completion order.
+                trajectories = map_tasks(
+                    pool, partial(_isolated_simulate, self, parameters), arguments
+                )
+            except Exception as e:
+                raise RuntimeError(f"Simulation failed: {str(e)}") from e
+
         return SimulationResults(trajectories=trajectories, parameters=self.parameters)
+
+
+@single_threaded
+def _isolated_simulate(epimodel, parameters, rng):
+    """Run one simulation with its own copy of the model and inputs.
+
+    Defined at module scope so ProcessPoolExecutor can pickle this function.
+    """
+    # Copy model and inputs for this simulation
+    epimodel, parameters = copy.deepcopy((epimodel, parameters))
+    # Run simulation
+    return simulate(epimodel, rng=rng, **parameters)
 
 
 def simulate(
