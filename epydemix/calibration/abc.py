@@ -1,5 +1,6 @@
 import copy
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
@@ -12,7 +13,7 @@ from ..utils.abc_smc_utils import (
     DefaultPerturbationDiscrete,
 )
 from ..utils.random_utils import rng_for_index
-from . import _evaluate
+from . import _evaluate, _worker_inputs
 from ._scheduler import create_particle_scheduler, validate_parallel_strategy
 from .calibration_results import CalibrationResults
 from .metrics import rmse
@@ -117,8 +118,9 @@ class ABCSampler:
         and distance evaluation use one thread per loaded BLAS/OpenMP library in both
         sequential and parallel modes, restoring the previous limits afterward.
 
-        Process tasks receive model inputs; caller-owned executors retain their
-        initializer and lifetime.
+        Owned calibration pools receive fixed inputs once at startup. Each candidate
+        restores a fresh copy in its worker, preserving isolation of mutable inputs.
+        Caller-owned executors retain their initializer and receive full task inputs.
 
         Set `rng` on ABCSampler to reproduce results across worker counts. Simulation
         functions must use the supplied `parameters["rng"]`; custom perturbations
@@ -460,9 +462,24 @@ class ABCSampler:
             priors=self.priors,
         )
 
+    @contextmanager
     def _calibration_executor(self, n_workers, executor):
-        """Open a process pool or reuse the caller's executor."""
-        return executor_context(n_workers, executor)
+        """Connect an owned pool to the fixed calibration input snapshot."""
+        if executor is not None or n_workers is None:
+            with executor_context(n_workers, executor) as pool:
+                yield pool
+            return
+
+        # Keep the snapshot until all owned workers have stopped
+        with _worker_inputs.worker_input_file() as path:
+            with executor_context(
+                n_workers,
+                initializer=_worker_inputs.initialize_particle_worker,
+                initargs=(path,),
+            ) as pool:
+                # Validate the pool before saving inputs; workers start on submit
+                _worker_inputs.save_worker_inputs(path, self._get_particle_inputs())
+                yield pool
 
     def _get_particle_inputs(self):
         """Return the fixed inputs shared by all candidate evaluations."""
