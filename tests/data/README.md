@@ -16,3 +16,9 @@ The generator is an explicit maintenance command, never called by pytest. A pure
 refactor must retain this snapshot. An intentional RNG change must first fail the
 old reference, then update only affected outputs and document the source commit.
 The mathematical/public-API contract tests do not require this pinned environment.
+
+The pinned versions do not pin CPU implementations of PDF arithmetic. The CI run
+36708373748 differed by one float64 ULP in one computed SMC weight, with all other
+fields identical. Weight values alone permit four ULPs; their dtype/shape and all
+particles, distances, trajectories, projections and RNG states remain exact. The
+recorded fixture is unchanged. Independent weight-formula tests remain enabled.
