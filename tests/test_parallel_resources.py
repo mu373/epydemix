@@ -151,19 +151,24 @@ def _set_two_threads():
 
 
 def _native_simulate(params):
-    assert _thread_counts() and set(_thread_counts()) == {1}
+    assert _execution._thread_limit_scope.active
+    assert _execution._thread_limit_scope.pid == os.getpid()
+    assert set(_thread_counts()) <= {1}
     if params.get("fail"):
         raise RuntimeError("simulation failed")
     return {"data": np.zeros(1)}
 
 
 def _native_distance(data, simulation):
-    assert set(_thread_counts()) == {1}
+    assert _execution._thread_limit_scope.active
+    assert set(_thread_counts()) <= {1}
     return 0.0
 
 
 def test_native_limits_apply_and_restore_in_spawn_pool_and_sequential():
     """Apply one native thread per evaluation and restore limits, including on failure."""
+    if not _thread_counts():
+        pytest.skip("No native backend supported by threadpoolctl in this build")
     with threadpool_limits(limits=2):
         before = _thread_counts()
         assert before and set(before) == {2}
@@ -198,7 +203,7 @@ def test_native_limits_apply_and_restore_in_spawn_pool_and_sequential():
                     pool.submit(
                         _evaluate.simulate_projection, _native_simulate, {"fail": True}
                     ).result()
-            assert set(pool.submit(_thread_counts).result()) == {2}
+            assert set(pool.submit(_thread_counts).result()) <= {2}
         assert _thread_counts() == before
     with _execution.executor_context(n_workers=1) as pool:
         pool.submit(_evaluate.simulate_projection, _native_simulate, {}).result()
@@ -208,8 +213,9 @@ def test_native_discovery_once_per_serial_batch_and_refreshes(monkeypatch):
     """Discover libraries at each batch entry, not every nested particle call.
 
     An all-accepted 12-candidate model isolates setup cost. Checking factory calls,
-    instead of wall time, makes the regression deterministic; the real native-limit
-    checks inside model/distance still verify behavior and restoration on failure.
+    instead of wall time, makes the regression deterministic; the model/distance
+    checks verify active scope, supported backend limits and restoration on failure.
+    Scope counting remains useful on Accelerate builds with no controllable pools.
     """
     original = _execution.threadpool_limits
     entries = []
@@ -233,14 +239,14 @@ def test_native_discovery_once_per_serial_batch_and_refreshes(monkeypatch):
                 strategy="rejection", num_particles=12, epsilon=1, verbose=False
             )
             assert len(entries) == expected
-            assert set(_thread_counts()) == {2}
+            assert set(_thread_counts()) <= {2}
         sampler.parameters["fail"] = True
         with pytest.raises(RuntimeError, match="simulation failed"):
             sampler.calibrate(
                 strategy="rejection", num_particles=12, epsilon=1, verbose=False
             )
         assert len(entries) == 3
-        assert set(_thread_counts()) == {2}
+        assert set(_thread_counts()) <= {2}
 
 
 @pytest.mark.skipif(os.name != "posix", reason="fork state is POSIX-specific")
@@ -262,7 +268,7 @@ def test_fork_does_not_inherit_active_native_scope(monkeypatch):
             pool, _evaluate.simulate_projection, [(_native_simulate, {})]
         )
         assert len(result) == 1
-        assert set(pool.submit(_thread_counts).result()) == {2}
+        assert set(pool.submit(_thread_counts).result()) <= {2}
 
 
 def test_parallel_dispatch_does_not_limit_parent_threads(monkeypatch):
