@@ -128,12 +128,27 @@ def test_multinomial_only_leaves_to_masked_destinations():
     assert draw.sum() == 1000
 
 
-def test_multinomial_without_rng_is_nondeterministic():
-    """The ``rng=None`` path draws from a fresh generator, so it is not reproducible.
+def test_multinomial_without_rng_requests_fresh_entropy(monkeypatch):
+    """Unseeded multinomial calls request a new generator with no fixed seed.
 
-    Negative control for the seeded tests: without a seed two draws must (almost
-    surely) differ, confirming the stochasticity is real rather than a fixed default.
+    Two independent multinomial draws can coincide, so unequal counts are a flaky
+    negative control. Inject distinct generators and check both factory arguments
+    and state advancement instead: a fixed default seed or cached generator fails
+    deterministically, without selecting random outputs or retrying failed draws.
     """
-    draw_a = multinomial(1000, RATES, STAY_IDX, MASK, dt=1.0)
-    draw_b = multinomial(1000, RATES, STAY_IDX, MASK, dt=1.0)
-    assert draw_a != pytest.approx(draw_b)
+    generators = [np.random.default_rng(0), np.random.default_rng(1)]
+    before = [rng.bit_generator.state for rng in generators]
+    pending = iter(generators)
+    seeds = []
+
+    def fresh(seed=None):
+        seeds.append(seed)
+        return next(pending)
+
+    monkeypatch.setattr(np.random, "default_rng", fresh)
+    for _ in generators:
+        multinomial(1000, RATES, STAY_IDX, MASK, dt=1.0)
+    assert seeds == [None, None]
+    assert all(
+        rng.bit_generator.state != state for rng, state in zip(generators, before)
+    )
