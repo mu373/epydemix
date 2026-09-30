@@ -12,6 +12,7 @@ from epydemix._execution import _get_available_cpu_count
 from tests.fixtures.calibration import (
     assert_exact_calibration,
     make_runtime_skewed_sampler,
+    make_sampler,
     make_seeded_sampler,
 )
 
@@ -124,6 +125,39 @@ class TestParallelEquivalence:
                     right.get_projection_trajectories()["data"],
                 )
             assert executor.submit(int, "7").result() == 7
+
+    def test_sir_checkpoint_resume_across_schedulers(
+        self, scheduler_strategy, tmp_path
+    ):
+        """A real SIR model and resumed SMC retain every generation across strategies.
+
+        Resume a one-generation parallel checkpoint using sequential execution.
+        Surplus evaluation counts may differ, but RNG state and retained data
+        must match an uninterrupted sequential run with in-memory history.
+        """
+        reference_sampler = make_sampler("sir")
+        options = dict(num_particles=6, verbose=False)
+        reference = reference_sampler.calibrate(num_generations=3, **options)
+        checkpoint = tmp_path / "run.checkpoint"
+        parallel = make_sampler("sir")
+        parallel.calibrate(
+            num_generations=1,
+            n_workers=min(2, _CPU_CAPACITY),
+            parallel_strategy=scheduler_strategy,
+            checkpoint_path=checkpoint,
+            **options,
+        )
+        result = parallel.calibrate(
+            num_generations=3,
+            checkpoint_path=checkpoint,
+            resume=True,
+            **options,
+        )
+        assert_exact_calibration(reference, result)
+        assert (
+            reference_sampler.rng.bit_generator.state
+            == parallel.rng.bit_generator.state
+        )
 
     @pytest.mark.parametrize("strategy", ["rejection", "smc"])
     @pytest.mark.parametrize("slow_sign", [-1, 1])
