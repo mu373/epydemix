@@ -8,7 +8,10 @@ import pytest
 
 from epydemix._execution import map_tasks
 from epydemix.calibration._scheduler import (
+    DynamicScheduler,
     SequentialScheduler,
+    create_particle_scheduler,
+    validate_parallel_strategy,
 )
 
 
@@ -144,3 +147,28 @@ def test_sequential_cutoffs_do_not_consume_extra_candidates():
     }
     exhausted = SequentialScheduler().run_until_n_accepted(evaluate, arguments(), 3)
     assert exhausted == {**result, "n_simulations": 4}
+
+
+def test_strategy_name_selects_scheduler():
+    """Select by executor availability while keeping name validation separate."""
+    with patch("epydemix.calibration._scheduler.DynamicScheduler") as constructor:
+        validate_parallel_strategy("dynamic")
+        constructor.assert_not_called()
+        assert isinstance(create_particle_scheduler(None), SequentialScheduler)
+        constructor.assert_not_called()
+    with ProcessPoolExecutor(max_workers=1) as pool:
+        scheduler = create_particle_scheduler(pool, "dynamic")
+        assert isinstance(scheduler, DynamicScheduler)
+        assert scheduler.executor is pool
+        for strategy in ("static", "non_speculative", "dyn", "unknown"):
+            with pytest.raises(ValueError, match="Unknown parallel strategy"):
+                create_particle_scheduler(pool, strategy)
+    for strategy in ("static", "non_speculative", "dyn", "unknown"):
+        with pytest.raises(ValueError, match="Unknown parallel strategy"):
+            create_particle_scheduler(None, strategy)
+
+
+def test_dynamic_scheduler_requires_executor():
+    """DYN must never silently fall back to sequential execution."""
+    with pytest.raises(ValueError, match="requires an executor"):
+        DynamicScheduler(None)
