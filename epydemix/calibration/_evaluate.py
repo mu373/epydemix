@@ -6,6 +6,7 @@ from itertools import islice
 
 import numpy as np
 
+from .._execution import map_tasks, single_threaded
 from ._proposals import ProposalSequence
 
 
@@ -19,6 +20,7 @@ def run_particle_evaluations(
     n_evaluations=None,
     epsilon=None,
     scheduler=None,
+    pool=None,
     start_time=None,
     max_time=None,
     total_simulations_budget=None,
@@ -34,7 +36,7 @@ def run_particle_evaluations(
 
     Set exactly one of n_accepted (SMC/rejection) or n_evaluations (top fraction).
     Acceptance targets use the supplied SequentialScheduler;
-    fixed counts evaluate candidates sequentially. A time or simulation budget can stop either early.
+    fixed counts use map_tasks. A time or simulation budget can stop either early.
 
     Args:
         inputs (tuple): 5-tuple of (simulation_function, fixed_parameters, param_names,
@@ -45,6 +47,7 @@ def run_particle_evaluations(
         n_accepted (int, optional): Target number of accepted particles (for SMC/rejection).
         n_evaluations (int, optional): Target number of candidate evaluations (for top fraction).
         epsilon (float, optional): Distance threshold for acceptance. Default is None.
+        pool (ProcessPoolExecutor, optional): Worker pool, or None for sequential execution.
         scheduler (SequentialScheduler, optional): Acceptance scheduler.
         start_time (datetime, optional): Start timestamp of the calibration run.
         max_time (timedelta, optional): Time limit measured from start_time.
@@ -99,21 +102,29 @@ def run_particle_evaluations(
         deadline,
     )
     # Prepare the evaluator and its inputs
-    evaluate, arguments = build_particle_tasks(inputs, candidates, inclusive=inclusive)
+    evaluate, arguments = build_particle_tasks(
+        pool, inputs, candidates, inclusive=inclusive
+    )
 
     if n_evaluations is not None:
         # Evaluate a fixed number of candidates and preserve their input order
         count = (
             min(n_evaluations, remaining) if remaining is not None else n_evaluations
         )
-        results, accepted = [], []
-        for args in islice(arguments, count):
-            result = evaluate(*args)
-            results.append(result)
-            if result["accepted"]:
-                accepted.append(result)
-            if progress is not None:
-                progress(len(results), len(accepted))
+        accepted_count = 0
+
+        def report(completed, result):
+            nonlocal accepted_count
+            accepted_count += int(result["accepted"])
+            progress(completed, accepted_count)
+
+        results = map_tasks(
+            pool,
+            evaluate,
+            islice(arguments, count),
+            on_completed=report if progress is not None else None,
+        )
+        accepted = [result for result in results if result["accepted"]]
         return {"accepted_results": accepted, "n_simulations": len(results)}
 
     # Evaluate until enough candidates are accepted or a limit is reached
@@ -127,7 +138,7 @@ def run_particle_evaluations(
     )
 
 
-def build_particle_tasks(inputs, candidates, *, inclusive=False):
+def build_particle_tasks(executor, inputs, candidates, *, inclusive=False):
     """Attach fixed model inputs to each candidate for evaluation."""
     function, parameters, names, observed, distance = inputs
     arguments = (
@@ -137,6 +148,7 @@ def build_particle_tasks(inputs, candidates, *, inclusive=False):
     return partial(evaluate_particle, inclusive=inclusive), arguments
 
 
+@single_threaded
 def evaluate_particle(
     simulation_function,
     parameters,
@@ -201,6 +213,7 @@ def evaluate_particle(
     }
 
 
+@single_threaded
 def simulate_projection(simulation_function, proj_params):
     """
     Run a single projection simulation.
