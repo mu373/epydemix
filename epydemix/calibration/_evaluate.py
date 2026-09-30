@@ -18,7 +18,6 @@ import numpy as np
 from .._execution import map_tasks, single_threaded
 from . import _worker_inputs
 from ._proposals import ProposalSequence
-from ._scheduler import run_sequential_until_n_accepted
 
 
 def run_particle_evaluations(
@@ -45,7 +44,7 @@ def run_particle_evaluations(
     """Prepare candidates and run their evaluations for an ABC method.
 
     Set exactly one of n_accepted (SMC/rejection) or n_evaluations (top fraction).
-    Acceptance targets use the sequential loop or the supplied parallel scheduler;
+    Acceptance targets use the supplied SequentialScheduler or DynamicScheduler;
     fixed counts use map_tasks. A time or simulation budget can stop either early.
 
     inputs contains (simulation_function, parameters, param_names, observed_data,
@@ -64,8 +63,8 @@ def run_particle_evaluations(
     target = n_accepted if n_accepted is not None else n_evaluations
     if target < 1:
         raise ValueError("The requested particle count must be positive")
-    if n_accepted is not None and pool is not None and scheduler is None:
-        raise ValueError("Parallel acceptance sampling requires a scheduler")
+    if n_accepted is not None and scheduler is None:
+        raise ValueError("Acceptance sampling requires a scheduler")
 
     # Calculate the deadline and remaining simulation budget
     deadline = start_time + max_time if max_time is not None else None
@@ -107,19 +106,8 @@ def run_particle_evaluations(
             progress(len(results), len(accepted))
         return {"accepted_results": accepted, "n_simulations": len(results)}
 
-    # Evaluate sequentially until enough candidates are accepted or a limit is reached
-    if pool is None:
-        return run_sequential_until_n_accepted(
-            evaluate,
-            arguments,
-            n_target=n_accepted,
-            max_simulations=remaining,
-            deadline=deadline,
-            progress=progress,
-        )
-    # Run the selected parallel acceptance scheduler
+    # Run the selected acceptance scheduler
     return scheduler.run_until_n_accepted(
-        pool,
         evaluate,
         arguments,
         n_target=n_accepted,

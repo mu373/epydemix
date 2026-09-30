@@ -69,7 +69,7 @@ class SMCRun:
             minimum_epsilon, max_time, total_simulations_budget, perturbations, verbose,
             checkpoint_path, resume, history_storage: See `ABCSampler.run_smc`.
             pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
-            scheduler: Parallel scheduler, or None for sequential execution.
+            scheduler: SequentialScheduler or DynamicScheduler for acceptance sampling.
 
         Returns:
             CalibrationResults: See `ABCSampler.run_smc`.
@@ -438,7 +438,7 @@ class SMCRun:
             num_particles (int): Number of particles to accept.
             perturbations (Dict[str, Perturbation]): Perturbation kernel per parameter.
             pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
-            scheduler: Parallel scheduler, or None for sequential execution.
+            scheduler: SequentialScheduler or DynamicScheduler for acceptance sampling.
             start_time (datetime): Start of the calibration run.
             max_time (timedelta, optional): Time limit measured from start_time.
             total_simulations_budget (int, optional): Maximum number of simulations across the whole run.

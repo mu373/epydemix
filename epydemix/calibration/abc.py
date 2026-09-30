@@ -275,11 +275,7 @@ class ABCSampler:
         )
         try:
             with self._calibration_executor(n_workers, executor) as pool:
-                scheduler = (
-                    create_particle_scheduler(parallel_strategy)
-                    if pool is not None
-                    else None
-                )
+                scheduler = create_particle_scheduler(pool, parallel_strategy)
                 # Run SMC and get CalibrationResults
                 return smc_run.execute(
                     num_particles=num_particles,
@@ -368,11 +364,7 @@ class ABCSampler:
                 )
 
         with self._calibration_executor(n_workers, executor) as pool:
-            scheduler = (
-                create_particle_scheduler(parallel_strategy)
-                if pool is not None
-                else None
-            )
+            scheduler = create_particle_scheduler(pool, parallel_strategy)
             # Prepare and evaluate candidates until enough are accepted
             result = _evaluate.run_particle_evaluations(
                 self._get_particle_inputs(),

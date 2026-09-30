@@ -425,6 +425,7 @@ def test_shared_evaluation_stops_on_acceptances_or_evaluations(
 ):
     """Fixed counts must include rejected evaluations; acceptance targets retry."""
     from epydemix.calibration._evaluate import run_particle_evaluations
+    from epydemix.calibration._scheduler import SequentialScheduler
 
     calls, progress = [], []
 
@@ -441,6 +442,7 @@ def test_shared_evaluation_stops_on_acceptances_or_evaluations(
         np.random.default_rng(43),
         True,
         epsilon=0.5,
+        scheduler=SequentialScheduler() if "n_accepted" in counts else None,
         progress=lambda done, kept: progress.append((done, kept)),
         **counts,
     )
@@ -457,9 +459,12 @@ def test_shared_evaluation_stops_on_acceptances_or_evaluations(
         ({"n_accepted": 1, "n_evaluations": 1}, "exactly one"),
         ({"n_accepted": 0}, "positive"),
         ({"n_evaluations": 0}, "positive"),
+        ({"n_accepted": 1}, "requires a scheduler"),
     ],
 )
-def test_shared_evaluation_rejects_invalid_counts_before_rng_advances(counts, message):
+def test_shared_evaluation_rejects_invalid_configuration_before_rng_advances(
+    counts, message
+):
     from epydemix.calibration._evaluate import run_particle_evaluations
 
     rng = np.random.default_rng(43)

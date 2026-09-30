@@ -9,8 +9,8 @@ import pytest
 from epydemix._execution import map_tasks
 from epydemix.calibration._scheduler import (
     DynamicScheduler,
+    SequentialScheduler,
     create_particle_scheduler,
-    run_sequential_until_n_accepted,
     validate_parallel_strategy,
 )
 
@@ -95,10 +95,12 @@ def test_sequential_cutoffs_do_not_consume_extra_candidates():
         {"max_simulations": 0},
         {"deadline": datetime.now() - timedelta(seconds=1)},
     ):
-        result = run_sequential_until_n_accepted(evaluate, arguments(), 3, **options)
+        result = SequentialScheduler().run_until_n_accepted(
+            evaluate, arguments(), 3, **options
+        )
         assert result == {"accepted_results": [], "n_simulations": 0}
         assert consumed == []
-    result = run_sequential_until_n_accepted(
+    result = SequentialScheduler().run_until_n_accepted(
         evaluate,
         arguments(),
         3,
@@ -111,25 +113,30 @@ def test_sequential_cutoffs_do_not_consume_extra_candidates():
         "accepted_results": [evaluate(0), evaluate(2)],
         "n_simulations": 3,
     }
-    exhausted = run_sequential_until_n_accepted(evaluate, arguments(), 3)
+    exhausted = SequentialScheduler().run_until_n_accepted(evaluate, arguments(), 3)
     assert exhausted == {**result, "n_simulations": 4}
 
 
 def test_strategy_name_selects_scheduler():
-    """Resolve the public name at the boundary, never as a worker-loop flag."""
+    """Select by executor availability while keeping name validation separate."""
     with patch("epydemix.calibration._scheduler.DynamicScheduler") as constructor:
         validate_parallel_strategy("dynamic")
         constructor.assert_not_called()
-    assert isinstance(create_particle_scheduler(), DynamicScheduler)
-    assert isinstance(create_particle_scheduler("dynamic"), DynamicScheduler)
+        assert isinstance(create_particle_scheduler(None), SequentialScheduler)
+        constructor.assert_not_called()
+    with ProcessPoolExecutor(max_workers=1) as pool:
+        scheduler = create_particle_scheduler(pool, "dynamic")
+        assert isinstance(scheduler, DynamicScheduler)
+        assert scheduler.executor is pool
+        for strategy in ("static", "non_speculative", "dyn", "unknown"):
+            with pytest.raises(ValueError, match="Unknown parallel strategy"):
+                create_particle_scheduler(pool, strategy)
     for strategy in ("static", "non_speculative", "dyn", "unknown"):
         with pytest.raises(ValueError, match="Unknown parallel strategy"):
-            validate_parallel_strategy(strategy)
-        with pytest.raises(ValueError, match="Unknown parallel strategy"):
-            create_particle_scheduler(strategy)
+            create_particle_scheduler(None, strategy)
 
 
 def test_dynamic_scheduler_requires_executor():
     """DYN must never silently fall back to sequential execution."""
     with pytest.raises(ValueError, match="requires an executor"):
-        DynamicScheduler().run_until_n_accepted(None, int, [(1,)], 1)
+        DynamicScheduler(None)

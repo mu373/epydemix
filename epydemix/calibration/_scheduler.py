@@ -3,7 +3,8 @@
 DynamicScheduler assigns candidate IDs, stops new evaluations at the acceptance
 or budget limit, drains running evaluations, and returns results in candidate
 order. Proposal generation lives in _proposals; simulation and acceptance checks
-live in _evaluate. Sequential calibration uses the same stopping conditions.
+live in _evaluate. SequentialScheduler applies the same stopping conditions
+in the calling process.
 Process creation and ownership live in epydemix._execution.
 """
 
@@ -24,10 +25,12 @@ def validate_parallel_strategy(strategy):
         raise ValueError(f"Unknown parallel strategy: {strategy}. Must be 'dynamic'")
 
 
-def create_particle_scheduler(strategy="dynamic"):
-    """Return the acceptance scheduler selected for SMC or rejection sampling."""
+def create_particle_scheduler(executor, strategy="dynamic"):
+    """Select sequential acceptance or the requested strategy for this executor."""
     validate_parallel_strategy(strategy)
-    return DynamicScheduler()
+    if executor is None:
+        return SequentialScheduler()
+    return DynamicScheduler(executor)
 
 
 class DynamicScheduler:
@@ -39,9 +42,14 @@ class DynamicScheduler:
     See the DYN strategy: https://doi.org/10.1371/journal.pone.0294015
     """
 
+    def __init__(self, executor):
+        """Use an existing executor; its caller owns the pool lifetime."""
+        if executor is None:
+            raise ValueError("DynamicScheduler requires an executor")
+        self.executor = executor
+
     def run_until_n_accepted(
         self,
-        executor,
         evaluate,
         arguments,
         n_target,
@@ -52,17 +60,16 @@ class DynamicScheduler:
     ):
         """Return accepted_results in candidate order and physical n_simulations.
 
-        Requires an executor and picklable, indexable arguments. Each worker
+        Uses the bound executor and requires picklable, indexable arguments. Each worker
         generates its own candidates using shared IDs. A deadline stops new work and drains running
         evaluations. progress(completed, accepted) reports physical completions
         and the retained acceptance count. Binding cumulative budgets or wall-clock
         cutoffs can change later SMC populations across worker counts.
         """
+        executor = self.executor
         # Validations
         if n_target < 1:
             raise ValueError("n_target must be positive")
-        if executor is None:
-            raise ValueError("DynamicScheduler requires an executor")
         if not hasattr(arguments, "__getitem__"):
             raise TypeError("DYN requires indexable candidate arguments")
         if (max_simulations is not None and max_simulations <= 0) or (
@@ -111,46 +118,50 @@ class DynamicScheduler:
         }
 
 
-def run_sequential_until_n_accepted(
-    fn,
-    args_list,
-    n_target,
-    *,
-    max_simulations=None,
-    deadline=None,
-    progress=None,
-):
-    """Collect accepted candidates sequentially in the calling process.
+class SequentialScheduler:
+    """Evaluate one candidate at a time until the acceptance target or a limit."""
 
-    Stop at n_target acceptances, max_simulations, deadline, or exhausted inputs.
-    Return accepted_results in candidate order; n_simulations counts all evaluations.
-    Call progress(completed, accepted) after each evaluation, when provided.
-    """
-    if n_target < 1:
-        raise ValueError("n_target must be positive")
-    accepted = []
-    completed = 0
-    arguments = iter(args_list)
-    while len(accepted) < n_target:
-        # Check limits before requesting another candidate
-        if max_simulations is not None and completed >= max_simulations:
-            break
-        if deadline is not None and datetime.now() >= deadline:
-            break
-        # Get the next candidate
-        try:
-            args = next(arguments)
-        except StopIteration:
-            break
-        # Evaluate the candidate
-        result = fn(*args)
-        completed += 1
-        # Collect accepted candidates and report progress
-        if result["accepted"]:
-            accepted.append(result)
-        if progress is not None:
-            progress(completed, len(accepted))
-    return {"accepted_results": accepted, "n_simulations": completed}
+    def run_until_n_accepted(
+        self,
+        evaluate,
+        arguments,
+        n_target,
+        *,
+        max_simulations=None,
+        deadline=None,
+        progress=None,
+    ):
+        """Collect accepted candidates sequentially in the calling process.
+
+        Stop at n_target acceptances, max_simulations, deadline, or exhausted inputs.
+        Return accepted_results in candidate order; n_simulations counts all evaluations.
+        Call progress(completed, accepted) after each evaluation, when provided.
+        """
+        if n_target < 1:
+            raise ValueError("n_target must be positive")
+        accepted = []
+        completed = 0
+        arguments = iter(arguments)
+        while len(accepted) < n_target:
+            # Check limits before requesting another candidate
+            if max_simulations is not None and completed >= max_simulations:
+                break
+            if deadline is not None and datetime.now() >= deadline:
+                break
+            # Get the next candidate
+            try:
+                args = next(arguments)
+            except StopIteration:
+                break
+            # Evaluate the candidate
+            result = evaluate(*args)
+            completed += 1
+            # Collect accepted candidates and report progress
+            if result["accepted"]:
+                accepted.append(result)
+            if progress is not None:
+                progress(completed, len(accepted))
+        return {"accepted_results": accepted, "n_simulations": completed}
 
 
 class _SchedulerState:

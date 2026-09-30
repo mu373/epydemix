@@ -49,8 +49,8 @@ def test_dynamic_retries_inside_one_worker_job():
     """One worker job returns three accepted particles after nine evaluations."""
     with ProcessPoolExecutor(max_workers=1) as pool:
         with patch.object(pool, "submit", wraps=pool.submit) as submit:
-            result = DynamicScheduler().run_until_n_accepted(
-                pool, every_third, Arguments(), 3
+            result = DynamicScheduler(pool).run_until_n_accepted(
+                every_third, Arguments(), 3
             )
         assert submit.call_count == 1
     assert result["n_simulations"] == 9
@@ -71,8 +71,8 @@ def test_dynamic_drains_surplus_and_keeps_earliest_candidate():
         with ProcessPoolExecutor(
             max_workers=2, mp_context=get_context("spawn")
         ) as pool:
-            result = DynamicScheduler().run_until_n_accepted(
-                pool, synchronized_accept, args, 1
+            result = DynamicScheduler(pool).run_until_n_accepted(
+                synchronized_accept, args, 1
             )
     assert result["n_simulations"] == 2
     assert result["accepted_results"] == [{"accepted": True, "params": [0]}]
@@ -93,8 +93,7 @@ def test_failure_drains_jobs_and_preserves_external_pool(failure):
         list(pool.map(int, ["1", "2"]))
         children = {child.pid for child in active_children()}
         with pytest.raises((RuntimeError, IndexError), match=failure + " failure"):
-            DynamicScheduler().run_until_n_accepted(
-                pool,
+            DynamicScheduler(pool).run_until_n_accepted(
                 fail_model if failure == "model" else every_third,
                 Arguments(fail=failure == "proposal"),
                 3,
@@ -106,15 +105,14 @@ def test_failure_drains_jobs_and_preserves_external_pool(failure):
 
 def test_explicit_physical_budget_and_expired_deadline():
     """Keep an explicitly requested physical cap even when N cannot be reached."""
-    scheduler = DynamicScheduler()
     with ProcessPoolExecutor(max_workers=2) as pool:
+        scheduler = DynamicScheduler(pool)
         result = scheduler.run_until_n_accepted(
-            pool, every_third, Arguments(), 10, max_simulations=5
+            every_third, Arguments(), 10, max_simulations=5
         )
         assert result["n_simulations"] == 5
         assert result["accepted_results"] == [{"accepted": True, "params": [2]}]
         result = scheduler.run_until_n_accepted(
-            pool,
             every_third,
             Arguments(),
             10,
