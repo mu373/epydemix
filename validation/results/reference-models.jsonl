@@ -1,0 +1,6 @@
+{"model": "StochasticSIS", "steps": 20, "seeds": [43, 29, 47], "passed": true, "numpy": "1.26.4", "source_commit": "9c1655e7d22d34684fac7ca53311b1fa4449951d"}
+{"model": "StochasticSIR", "steps": 20, "seeds": [43, 29, 47], "passed": true, "numpy": "1.26.4", "source_commit": "9c1655e7d22d34684fac7ca53311b1fa4449951d"}
+{"model": "StochasticSEIR", "steps": 20, "seeds": [43, 29, 47], "passed": true, "numpy": "1.26.4", "source_commit": "9c1655e7d22d34684fac7ca53311b1fa4449951d"}
+{"model": "StochasticSISAgeGroups", "steps": 20, "seeds": [43, 29, 47], "passed": true, "numpy": "1.26.4", "source_commit": "9c1655e7d22d34684fac7ca53311b1fa4449951d"}
+{"model": "StochasticSIRAgeGroups", "steps": 20, "seeds": [43, 29, 47], "passed": true, "numpy": "1.26.4", "source_commit": "9c1655e7d22d34684fac7ca53311b1fa4449951d"}
+{"model": "StochasticSEIRAgeGroups", "steps": 20, "seeds": [43, 29, 47], "passed": true, "numpy": "1.26.4", "source_commit": "9c1655e7d22d34684fac7ca53311b1fa4449951d"}
