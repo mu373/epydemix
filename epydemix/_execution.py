@@ -203,7 +203,6 @@ def single_threaded(function):
     return run
 
 
-@single_threaded
 def map_tasks(executor, fn, args_list, *, on_completed=None):
     """
     Run `fn(*args)` for every item of `args_list` and return the results in input order.
@@ -222,13 +221,7 @@ def map_tasks(executor, fn, args_list, *, on_completed=None):
         List[Any]: One result per argument tuple, in input order.
     """
     if executor is None:
-        results = []
-        for args in args_list:
-            result = fn(*args)
-            results.append(result)
-            if on_completed is not None:
-                on_completed(len(results), result)
-        return results
+        return _map_sequential(fn, args_list, on_completed)
     arguments = iter(args_list)
     capacity = executor._max_workers * 2
     futures, results = {}, []
@@ -257,3 +250,15 @@ def map_tasks(executor, fn, args_list, *, on_completed=None):
         # Cancel any remaining futures on error or exit
         for future in futures:
             future.cancel()
+
+
+@single_threaded
+def _map_sequential(fn, args_list, on_completed):
+    """Apply native limits once to a batch executed in the calling process."""
+    results = []
+    for args in args_list:
+        result = fn(*args)
+        results.append(result)
+        if on_completed is not None:
+            on_completed(len(results), result)
+    return results

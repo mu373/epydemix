@@ -2,10 +2,13 @@
 
 from datetime import datetime
 
+from .._execution import single_threaded
+
 
 class SequentialScheduler:
     """Evaluate one candidate at a time until the acceptance target or a limit."""
 
+    @single_threaded
     def run_until_n_accepted(
         self,
         evaluate,
