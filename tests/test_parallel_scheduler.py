@@ -130,7 +130,13 @@ def test_sequential_cutoffs_do_not_consume_extra_candidates():
         result = SequentialScheduler().run_until_n_accepted(
             evaluate, arguments(), 3, **options
         )
-        assert result == {"accepted_results": [], "n_simulations": 0}
+        assert result == {
+            "accepted_results": [],
+            "n_simulations": 0,
+            "n_matched": 0,
+            "n_drained": 0,
+            "stop_reason": "budget" if "max_simulations" in options else "deadline",
+        }
         assert consumed == []
     result = SequentialScheduler().run_until_n_accepted(
         evaluate,
@@ -144,9 +150,12 @@ def test_sequential_cutoffs_do_not_consume_extra_candidates():
     assert result == {
         "accepted_results": [evaluate(0), evaluate(2)],
         "n_simulations": 3,
+        "n_matched": 2,
+        "n_drained": 0,
+        "stop_reason": "budget",
     }
     exhausted = SequentialScheduler().run_until_n_accepted(evaluate, arguments(), 3)
-    assert exhausted == {**result, "n_simulations": 4}
+    assert exhausted == {**result, "n_simulations": 4, "stop_reason": "input_exhausted"}
 
 
 def test_strategy_name_selects_scheduler():
