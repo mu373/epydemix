@@ -45,7 +45,9 @@ def _array_digest(array):
         str: Hex SHA-256 digest of the array data.
     """
     digest = hashlib.sha256()
-    if array.dtype.type in (np.longdouble, np.clongdouble):
+    if array.dtype.kind in "fc" and array.dtype.itemsize > (
+        8 if array.dtype.kind == "f" else 16
+    ):
         # Extended floats can contain padding bytes that change on scalar copies
         # or pickle round trips. Hash round-trip decimal values, retaining precision.
         for value in array.flat:
@@ -180,6 +182,10 @@ def _canonical(value):
     """
     if value is None or isinstance(value, (str, bool, int)):
         return [type(value).__name__, value]
+    # On some platforms longdouble has double precision and NumPy pickle restores
+    # it as float64. Canonicalize equivalent 64-bit scalars the same way.
+    if isinstance(value, np.floating) and value.dtype.itemsize == 8:
+        return ["float", float(value).hex()]
     if isinstance(value, float):
         return ["float", value.hex()]
     if isinstance(value, (np.ndarray, np.generic)):

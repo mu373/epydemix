@@ -554,7 +554,8 @@ def test_extended_float_input_hash_survives_pickle(dtype, container):
     copies/pickle reconstruction can change the unused bytes. Preserve dtype, shape,
     signed zero and full precision while allowing equivalent round trips; the adjacent
     representable value must still change the fingerprint. This also covers Windows,
-    where longdouble precision depends on the NumPy build.
+    where longdouble precision depends on the NumPy build; platforms with double
+    precision may unpickle the same dtype as the float64/clongdouble alias.
     """
     import pickle
 

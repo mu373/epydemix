@@ -78,7 +78,8 @@ def test_saved_threshold_preserves_scalar_precision(tmp_path):
         verbose=False,
     )
     state, _ = _checkpoint.read_checkpoint(path)
-    assert isinstance(state["epsilon"], np.longdouble)
+    # Same-width longdouble/float64 aliases can change scalar class on unpickle.
+    assert np.asarray(state["epsilon"]).dtype == epsilon.dtype
     assert state["epsilon"] == epsilon
 
 
