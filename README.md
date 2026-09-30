@@ -98,6 +98,25 @@ structured events independently of `verbose`; see
 [calibration logging](docs/CALIBRATION_LOGGING.md) for JSON Lines configuration and
 count/time definitions.
 
+### Parallel simulation ensembles
+
+`EpiModel.run_simulations()` uses the common process execution settings:
+
+```python
+results = model.run_simulations(
+    start_date="2023-01-01", end_date="2023-01-10",
+    Nsim=10, rng=43, n_workers=2,
+)
+```
+
+Trials receive independent indexed RNG streams and isolated model/input copies.
+This intentionally changes seeded ensembles from the shared-generator version.
+Increasing `Nsim` preserves the trial prefix for the same initial seed; repeated
+calls with a Generator advance it by one fixed-size seed draw per nonempty call.
+Custom transition callbacks must be picklable and use their supplied inputs.
+For spawn-based scripts, call the ensemble under `if __name__ == "__main__":`.
+Caller-owned process pools can be supplied as `executor` and remain open.
+
 ### Tutorials
 We provide a series of tutorials to help you get started with **epydemix**.
 
