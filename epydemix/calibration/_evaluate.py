@@ -79,7 +79,15 @@ def run_particle_evaluations(
     if (remaining is not None and remaining <= 0) or (
         deadline is not None and datetime.now() >= deadline
     ):
-        return {"accepted_results": [], "n_simulations": 0}
+        return {
+            "accepted_results": [],
+            "n_simulations": 0,
+            "n_matched": 0,
+            "n_drained": 0,
+            "stop_reason": "budget"
+            if remaining is not None and remaining <= 0
+            else "deadline",
+        }
 
     # Prepare proposals with one root RNG draw per generation or batch
     candidates = ProposalSequence(
@@ -117,7 +125,19 @@ def run_particle_evaluations(
             on_completed=report if progress is not None else None,
         )
         accepted = [result for result in results if result["accepted"]]
-        return {"accepted_results": accepted, "n_simulations": len(results)}
+        return {
+            "accepted_results": accepted,
+            "n_simulations": len(results),
+            "n_matched": len(accepted),
+            "n_drained": 0,
+            "stop_reason": "fixed_count"
+            if len(results) == n_evaluations
+            else "budget"
+            if remaining is not None and len(results) >= remaining
+            else "deadline"
+            if deadline is not None and datetime.now() >= deadline
+            else "input_exhausted",
+        }
 
     # Run the selected acceptance scheduler
     return scheduler.run_until_n_accepted(

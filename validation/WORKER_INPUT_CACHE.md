@@ -41,8 +41,9 @@ in `tests/test_worker_input_cache.py`.
 
 `psutil` is a validation dependency, not a library dependency. Sampled process-tree
 RSS sums shared pages repeatedly and is not unique memory. CPU time is sampled
-over child process lifetimes and includes imports. The batch timing adapter is
-temporary until core execution metrics are available. With `--profile`, task
+over child process lifetimes and includes imports. Historical cache measurements used a batch timing adapter. The current benchmark
+reads core execution metrics directly; use the recorded benchmark SHA to reproduce
+the historical instrument. With `--profile`, task
 spans and serialization are measured in a separate disposable process; a DYN task
 can evaluate many candidates, so task counts are not simulation counts. Profile
 results must not be mixed with ordinary wall-time comparisons.

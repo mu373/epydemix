@@ -93,6 +93,11 @@ Candidate IDs determine RNG streams and retained order. DYN drains in-flight wor
 and counts surplus evaluations toward the simulation budget. A binding budget or
 time cutoff can change later generations across worker counts.
 
+Calibration results also contain coarse execution metrics. Applications can collect
+structured events independently of `verbose`; see
+[calibration logging](docs/CALIBRATION_LOGGING.md) for JSON Lines configuration and
+count/time definitions.
+
 ### Tutorials
 We provide a series of tutorials to help you get started with **epydemix**.
 
