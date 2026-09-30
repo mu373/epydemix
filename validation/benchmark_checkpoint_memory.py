@@ -94,31 +94,34 @@ def main():
     parser.add_argument("--child", choices=["save", "load", "copy"])
     parser.add_argument("--path", type=Path)
     parser.add_argument("--size-mib", type=int, default=64)
+    parser.add_argument("--repeat", type=int, default=1)
     args = parser.parse_args()
     if args.child:
         print(json.dumps(child(args.child, args.path, args.size_mib)))
         return
     with tempfile.TemporaryDirectory() as directory:
-        path = str(Path(directory) / "memory.checkpoint")
-        for operation in ("save", "load", "copy"):
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "validation.benchmark_checkpoint_memory",
-                    "--child",
-                    operation,
-                    "--path",
-                    path,
-                    "--size-mib",
-                    str(args.size_mib),
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=60,
-            )
-            print(completed.stdout.strip(), flush=True)
+        for repeat in range(args.repeat):
+            path = str(Path(directory) / f"memory-{repeat}.checkpoint")
+            for operation in ("save", "load", "copy"):
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "validation.benchmark_checkpoint_memory",
+                        "--child",
+                        operation,
+                        "--path",
+                        path,
+                        "--size-mib",
+                        str(args.size_mib),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=60,
+                )
+                report = json.loads(completed.stdout)
+                print(json.dumps(dict(report, repeat=repeat)), flush=True)
 
 
 if __name__ == "__main__":
