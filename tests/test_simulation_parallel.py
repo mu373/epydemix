@@ -1,5 +1,6 @@
 """Ensemble execution preserves trial streams, isolation, and pool ownership."""
 
+import os
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from multiprocessing import get_context
 
@@ -13,7 +14,11 @@ from epydemix.utils.random_utils import rng_for_index
 
 
 class _TrialRate:
-    """Detect leaked callback state and nested native threads inside a simulation."""
+    """Detect leaked callback state and verify the simulation's native scope.
+
+    Scope/PID checks apply even on Accelerate builds without threadpoolctl support;
+    controllable BLAS/OpenMP pools must each use one thread inside the callback.
+    """
 
     def __init__(self, fail=False):
         self.calls = 0
@@ -22,7 +27,9 @@ class _TrialRate:
     def __call__(self, params, data):
         assert self.calls == data["t"]
         self.calls += 1
-        assert {pool["num_threads"] for pool in threadpool_info()} == {1}
+        assert _execution._thread_limit_scope.active
+        assert _execution._thread_limit_scope.pid == os.getpid()
+        assert {pool["num_threads"] for pool in threadpool_info()} <= {1}
         if self.fail:
             raise ValueError("expected transition failure")
         return data["parameters"][params][data["t"]]
