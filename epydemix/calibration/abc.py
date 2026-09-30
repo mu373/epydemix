@@ -13,7 +13,7 @@ from ..utils.abc_smc_utils import (
 )
 from ..utils.random_utils import rng_for_index
 from . import _evaluate
-from ._scheduler import SequentialScheduler
+from ._scheduler import create_particle_scheduler, validate_parallel_strategy
 from .calibration_results import CalibrationResults
 from .metrics import rmse
 
@@ -32,20 +32,29 @@ class ABCSampler:
         distance_function: Callable = rmse,
         rng: Optional[Any] = None,
     ):
-        """Initialize ABC calibration.
+        """
+        Initialize ABC calibration.
 
-        Candidates use independent random streams derived from the sampler RNG.
-        This changes seeded outputs from earlier versions. Seeded simulations and
-        custom perturbations must use their supplied RNG for reproducibility.
+        Seeded simulations must use parameters["rng"] and avoid shared mutable
+        state. With the same seed and numerical environment, results are identical
+        across worker counts and scheduling strategies without binding time or simulation budgets.
+        Candidate-specific streams change seeded outputs from earlier versions.
 
         Args:
-            rng: Optional seed or ``np.random.Generator`` making calibration
-                reproducible. It governs all ABC randomness (prior sampling,
-                perturbation kernels, resampling) and, when seeding is requested
-                (either here or via an ``"rng"`` key in ``parameters``), is also
-                injected into the simulation as an ``rng`` key. If None and
-                ``parameters`` has no ``"rng"`` key, a fresh unseeded Generator is
-                used and the simulation is not seeded.
+            simulation_function (Callable): Function taking a parameter dictionary and returning a
+                dictionary of simulated data, compared to the observed data by distance_function.
+            priors (Dict[str, Any]): Prior distribution (frozen scipy.stats distribution) for each
+                calibrated parameter.
+            parameters (Dict[str, Any]): Fixed parameters passed to every simulation.
+            observed_data (Any): Observed data to calibrate against.
+            distance_function (Callable, optional): Function `(data, simulation) -> float`.
+                Default is rmse.
+            rng (int or np.random.Generator, optional): Seed or generator making calibration
+                reproducible. It governs all ABC randomness (prior sampling, perturbation kernels,
+                resampling) and, when seeding is requested (either here or via an "rng" key in
+                parameters), is also injected into the simulation as an "rng" key. If None and
+                parameters has no "rng" key, a fresh unseeded Generator is used and the simulation
+                is not seeded. Default is None.
         """
         self.simulation_function = simulation_function
         self.priors = priors
@@ -88,6 +97,38 @@ class ABCSampler:
         Specifies the calibration strategy. Must be one of `{"smc", "rejection", "top_fraction"}`.
         - **kwargs**: Additional parameters depending on the chosen strategy.
 
+        ### Execution options (all strategies):
+        - `n_workers`: Number of worker processes; None runs in the calling process.
+          Negative values use max(1, available_cpus + 1 + n_workers): -1 uses all
+          available CPUs, -2 uses all but one, etc. Zero is invalid.
+        - `executor`: Optional caller-owned ProcessPoolExecutor, taking precedence over n_workers.
+
+        SMC and rejection additionally accept `parallel_strategy="dynamic"` (DYN),
+        currently the only supported acceptance scheduler. Top fraction evaluates
+        a fixed batch and accepts only `n_workers` and `executor` for parallel execution.
+
+        DYN also requires picklable priors and perturbation kernels because
+        proposals run inside workers. Proposal callbacks must use the supplied RNG
+        without hidden state that changes between proposals.
+
+        Worker counts exceeding detected logical CPU capacity are rejected, including
+        caller-owned executors. Linux affinity and visible cgroup quotas are honored;
+        fractional quotas are rounded down, with a minimum of one worker. Simulation
+        and distance evaluation use one thread per loaded BLAS/OpenMP library in both
+        sequential and parallel modes, restoring the previous limits afterward.
+
+        Process tasks receive model inputs; caller-owned executors retain their
+        initializer and lifetime.
+
+        Set `rng` on ABCSampler to reproduce results across worker counts. Simulation
+        functions must use the supplied `parameters["rng"]`; custom perturbations
+        must use their supplied rng too. Process workers require picklable functions
+        and parameters. Thread executors are not supported because models can mutate
+        shared state. A wall-clock `max_time` cutoff stops new submissions and drains
+        submitted work; it may change the returned prefix across worker counts.
+        Simulation budgets count actual evaluations, including DYN surplus. A binding
+        cumulative budget may stop DYN at a different SMC generation.
+
         ### Strategy-Specific Arguments:
 
         #### `"smc"` (Sequential Monte Carlo)
@@ -96,7 +137,7 @@ class ABCSampler:
         - `epsilon_schedule` (`Optional[List[float]]`, default: `None`): Predefined schedule for epsilon values.
         - `epsilon_quantile_level` (`float`, default: `0.5`): Quantile level to adapt epsilon if no schedule is provided.
         - `minimum_epsilon` (`Optional[float]`, default: `None`): Minimum allowable epsilon value.
-        - `max_time` (`Optional[timedelta]`, default: `None`): Time limit checked before each simulation.
+        - `max_time` (`Optional[timedelta]`, default: `None`): Time limit for submitting work; already-submitted tasks finish.
         - `total_simulations_budget` (`Optional[int]`, default: `None`): Maximum number of allowed simulations.
         - `perturbations` (`Optional[Dict[str, Any]]`, default: `None`): Perturbation kernels for parameters.
         - `verbose` (`bool`, default: `True`): Whether to print progress updates.
@@ -104,7 +145,7 @@ class ABCSampler:
         #### `"rejection"` (ABC Rejection Sampling)
         - `epsilon` (`float`, default: `0.1`): Distance threshold for accepting samples.
         - `num_particles` (`int`, default: `1000`): Number of accepted samples.
-        - `max_time` (`Optional[timedelta]`, default: `None`): Time limit checked before each simulation.
+        - `max_time` (`Optional[timedelta]`, default: `None`): Time limit for submitting work; already-submitted tasks finish.
         - `total_simulations_budget` (`Optional[int]`, default: `None`): Maximum number of allowed simulations.
         - `verbose` (`bool`, default: `True`): Whether to print progress updates.
         - `progress_update_interval` (`int`, default: `1000`): Interval at which progress updates are printed.
@@ -119,6 +160,7 @@ class ABCSampler:
 
         ### Raises:
         - `ValueError`: If an unknown strategy is specified.
+        - `TypeError`: If executor is not a ProcessPoolExecutor.
 
         Example Usage:
         ```python
@@ -157,6 +199,9 @@ class ABCSampler:
         total_simulations_budget: Optional[int] = None,
         perturbations: Optional[Dict[str, Any]] = None,
         verbose: bool = True,
+        n_workers: Optional[int] = None,
+        executor: Optional[ProcessPoolExecutor] = None,
+        parallel_strategy: str = "dynamic",
     ) -> CalibrationResults:
         """
         Run ABC-SMC and retain each complete generation in memory.
@@ -169,29 +214,43 @@ class ABCSampler:
             epsilon_quantile_level (float, optional): Quantile of the previous distances used as
                 epsilon when no schedule is given. Default is 0.5.
             minimum_epsilon (float, optional): Stop once epsilon falls below this value. Default is None.
-            max_time (timedelta, optional): Time limit checked before each simulation. Default is None.
+            max_time (timedelta, optional): Time limit for submitting work; already-submitted
+                simulations finish. Default is None.
             total_simulations_budget (int, optional): Maximum number of simulations across all
                 generations. Default is None.
             perturbations (Dict[str, Perturbation], optional): Perturbation kernel per parameter.
                 Default is None (default continuous/discrete kernels).
             verbose (bool, optional): Whether to print progress. Default is True.
+            n_workers (int, optional): Number of worker processes, at most the detected CPU capacity.
+                None runs in the calling process; negative values use available CPUs + 1 + n_workers, with a minimum of one. Zero is invalid.
+            executor (ProcessPoolExecutor, optional): Caller-owned worker pool, taking precedence
+                over n_workers. Default is None.
+            parallel_strategy (str, optional): Parallel scheduling strategy. Only "dynamic" is supported.
+                Default is "dynamic". DYN can perform surplus evaluations.
 
         Returns:
             CalibrationResults: Results of the last complete generation and its history. Empty if
                 generation 0 did not complete.
 
+        Raises:
+            TypeError: If executor is not a ProcessPoolExecutor.
         """
-        return self._execute_smc(
-            num_particles,
-            num_generations,
-            epsilon_schedule,
-            epsilon_quantile_level,
-            minimum_epsilon,
-            max_time,
-            total_simulations_budget,
-            perturbations,
-            verbose,
-        )
+        validate_parallel_strategy(parallel_strategy)
+        with self._calibration_executor(n_workers, executor) as pool:
+            scheduler = create_particle_scheduler(pool, parallel_strategy)
+            return self._execute_smc(
+                num_particles,
+                num_generations,
+                epsilon_schedule,
+                epsilon_quantile_level,
+                minimum_epsilon,
+                max_time,
+                total_simulations_budget,
+                perturbations,
+                verbose,
+                pool,
+                scheduler,
+            )
 
     def run_rejection(
         self,
@@ -201,23 +260,36 @@ class ABCSampler:
         total_simulations_budget: Optional[int] = None,
         verbose: bool = True,
         progress_update_interval: int = 1000,
+        n_workers: Optional[int] = None,
+        executor: Optional[ProcessPoolExecutor] = None,
+        parallel_strategy: str = "dynamic",
     ) -> CalibrationResults:
         """
         Run ABC rejection sampling.
 
         Candidates are drawn from the prior until num_particles have a distance below
-        epsilon, or a time/budget limit is reached. Simulations use the sampler RNG
-        when a seed was requested. A wall-clock cutoff can change which candidates
-        are evaluated.
+        epsilon, or a time/budget limit is reached. With an explicit seed, simulations
+        that use the supplied RNG and avoid shared mutable state reproduce results
+        across worker counts in the same numerical environment, provided no wall-clock
+        cutoff occurs. A max_time cutoff can change which candidates are evaluated.
 
         Args:
             epsilon (float, optional): Distance threshold for accepting a candidate. Default is 0.1.
             num_particles (int, optional): Number of accepted particles to collect. Default is 1000.
-            max_time (timedelta, optional): Time limit checked before each simulation. Default is None.
+            max_time (timedelta, optional): Time limit for submitting work; already-submitted
+                simulations finish. Default is None.
             total_simulations_budget (int, optional): Maximum number of simulations. Default is None.
             verbose (bool, optional): Whether to print progress. Default is True.
             progress_update_interval (int, optional): Number of simulations between progress
                 messages. Default is 1000.
+            n_workers (int, optional): Number of worker processes, at most the detected CPU capacity.
+                None runs in the calling process. Negative values use
+                max(1, available_cpus + 1 + n_workers): -1 uses all CPUs, -2 all but one.
+                Zero is invalid. Default is None.
+            executor (ProcessPoolExecutor, optional): Caller-owned worker pool, taking precedence
+                over n_workers. Default is None.
+            parallel_strategy (str, optional): Scheduling strategy. Currently only "dynamic" (DYN) is supported.
+                Default is "dynamic". DYN can perform surplus evaluations.
 
         Returns:
             CalibrationResults: Accepted particles with uniform weights, stored as generation 0.
@@ -225,6 +297,8 @@ class ABCSampler:
         Raises:
             ValueError: If progress_update_interval is not positive.
         """
+        # Validations
+        validate_parallel_strategy(parallel_strategy)
         if progress_update_interval < 1:
             raise ValueError("progress_update_interval must be positive")
         if verbose:
@@ -235,7 +309,7 @@ class ABCSampler:
         last_print = 0
 
         def progress(completed, accepted):
-            # Report progress after candidate evaluations.
+            # Report completed simulations in sequential or parallel execution.
             nonlocal last_print
             if verbose and completed - last_print >= progress_update_interval:
                 last_print = completed
@@ -244,19 +318,23 @@ class ABCSampler:
                     f"Acceptance rate: {accepted / completed * 100:.2f}%"
                 )
 
-        result = _evaluate.run_particle_evaluations(
-            self._get_particle_inputs(),
-            self.priors,
-            self.rng,
-            self._seed_requested,
-            n_accepted=num_particles,
-            scheduler=SequentialScheduler(),
-            epsilon=epsilon,
-            start_time=datetime.now(),
-            max_time=max_time,
-            total_simulations_budget=total_simulations_budget,
-            progress=progress,
-        )
+        with self._calibration_executor(n_workers, executor) as pool:
+            scheduler = create_particle_scheduler(pool, parallel_strategy)
+            # Prepare and evaluate candidates until enough are accepted
+            result = _evaluate.run_particle_evaluations(
+                self._get_particle_inputs(),
+                self.priors,
+                self.rng,
+                self._seed_requested,
+                n_accepted=num_particles,
+                epsilon=epsilon,
+                pool=pool,
+                scheduler=scheduler,
+                start_time=datetime.now(),
+                max_time=max_time,
+                total_simulations_budget=total_simulations_budget,
+                progress=progress,
+            )
         accepted = result["accepted_results"]
         completed = result["n_simulations"]
         if verbose:
@@ -315,7 +393,7 @@ class ABCSampler:
             )
 
         # Evaluate the fixed set of candidates before selecting by distance
-        with executor_context(n_workers, executor) as pool:
+        with self._calibration_executor(n_workers, executor) as pool:
             evaluation = _evaluate.run_particle_evaluations(
                 self._get_particle_inputs(),
                 self.priors,
@@ -372,6 +450,20 @@ class ABCSampler:
             weights={0: weights},
             observed_data=self.observed_data,
             priors=self.priors,
+        )
+
+    def _calibration_executor(self, n_workers, executor):
+        """Open a process pool or reuse the caller's executor."""
+        return executor_context(n_workers, executor)
+
+    def _get_particle_inputs(self):
+        """Return the fixed inputs shared by all candidate evaluations."""
+        return (
+            self.simulation_function,
+            self.parameters,
+            self.param_names,
+            self.observed_data,
+            self.distance_function,
         )
 
     def run_projections(
@@ -484,14 +576,18 @@ class ABCSampler:
         total_simulations_budget,
         perturbations,
         verbose,
+        pool,
+        scheduler,
     ) -> CalibrationResults:
         """
-        Run the ABC-SMC generations sequentially.
+        Run the ABC-SMC generations inside an already opened worker pool.
 
         Args:
             num_particles, num_generations, epsilon_schedule, epsilon_quantile_level,
             minimum_epsilon, max_time, total_simulations_budget, perturbations, verbose:
                 See `ABCSampler.run_smc`.
+            pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
+            scheduler: SequentialScheduler or DynamicScheduler for acceptance sampling.
 
         Returns:
             CalibrationResults: See `ABCSampler.run_smc`.
@@ -543,6 +639,8 @@ class ABCSampler:
                 epsilon,
                 num_particles,
                 perturbations,
+                pool,
+                scheduler,
                 start_time,
                 max_time,
                 total_simulations_budget,
@@ -605,6 +703,8 @@ class ABCSampler:
         epsilon,
         num_particles,
         perturbations,
+        pool,
+        scheduler,
         start_time,
         max_time,
         total_simulations_budget,
@@ -622,6 +722,8 @@ class ABCSampler:
             epsilon (float): Acceptance threshold for this generation.
             num_particles (int): Number of particles to accept.
             perturbations (Dict[str, Perturbation]): Perturbation kernel per parameter.
+            pool (ProcessPoolExecutor or None): Worker pool, or None for sequential execution.
+            scheduler: SequentialScheduler or DynamicScheduler for acceptance sampling.
             start_time (datetime): Start of the calibration run.
             max_time (timedelta, optional): Time limit measured from start_time.
             total_simulations_budget (int, optional): Maximum number of simulations across the whole run.
@@ -638,8 +740,9 @@ class ABCSampler:
             self.rng,
             self._seed_requested,
             n_accepted=num_particles,
-            scheduler=SequentialScheduler(),
             epsilon=epsilon,
+            pool=pool,
+            scheduler=scheduler,
             start_time=start_time,
             max_time=max_time,
             total_simulations_budget=total_simulations_budget,
@@ -767,13 +870,3 @@ class ABCSampler:
                 print("Total simulations budget reached")
             return True
         return False
-
-    def _get_particle_inputs(self):
-        """Return the fixed inputs shared by all candidate evaluations."""
-        return (
-            self.simulation_function,
-            self.parameters,
-            self.param_names,
-            self.observed_data,
-            self.distance_function,
-        )

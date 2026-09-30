@@ -91,7 +91,9 @@ def test_unreadable_limits_fail_conservatively(monkeypatch):
         assert _execution._get_available_cpu_count() == 1
 
 
-@pytest.mark.parametrize("strategy", ["top_fraction", "projections"])
+@pytest.mark.parametrize(
+    "strategy", ["smc", "rejection", "top_fraction", "projections"]
+)
 @pytest.mark.parametrize("external", [False, True])
 def test_oversized_pool_rejected_before_rng_or_submission(
     monkeypatch, strategy, external

@@ -88,7 +88,7 @@ results = model.run_simulations(
 
 **Worker counts**
 
-These `n_workers` settings apply to simulations, projections, and top-fraction calibration:
+The same `n_workers` settings apply to simulations, calibration, and projections:
 
 | `n_workers` | Execution |
 | --- | --- |
