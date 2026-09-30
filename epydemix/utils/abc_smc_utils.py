@@ -56,7 +56,12 @@ class DefaultPerturbationContinuous(Perturbation):
         """Update the standard deviation based on previous generation variance."""
         index = param_names.index(self.param_name)
         values = particles[:, index]
-        std = np.std(values)
+        with np.errstate(invalid="ignore"):
+            std = np.std(values)
+        if not np.isfinite(std) or std <= 0:
+            raise ValueError(
+                f"Parameter {self.param_name} needs positive finite variance for a Gaussian perturbation"
+            )
         self.std = std * np.sqrt(2)
 
 
@@ -144,8 +149,22 @@ def compute_particle_weights(
                     for j in range(len(previous_particles))
                 ]
             )
+            if not np.isfinite(denominator) or denominator <= 0:
+                raise ValueError(
+                    f"Particle {i} has a nonpositive or nonfinite kernel mixture density"
+                )
             new_weights[i] = numerator / denominator
-    new_weights /= new_weights.sum()
+    total = new_weights.sum()
+    if (
+        not np.all(np.isfinite(new_weights))
+        or np.any(new_weights < 0)
+        or not np.isfinite(total)
+        or total <= 0
+    ):
+        raise ValueError(
+            "Importance weights need a positive finite sum and finite nonnegative values"
+        )
+    new_weights /= total
     return new_weights
 
 

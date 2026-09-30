@@ -424,7 +424,10 @@ class ABCSampler:
             )
         results = evaluation["accepted_results"]
         distances = np.array([r["distance"] for r in results])
-        threshold = np.quantile(distances, top_fraction)
+        with np.errstate(invalid="ignore"):
+            threshold = np.quantile(distances, top_fraction)
+        if np.isnan(threshold):
+            raise ValueError("Undefined distance quantile; use finite distances")
         mask = distances <= threshold
         if verbose:
             print(

@@ -65,6 +65,8 @@ def run_particle_evaluations(
         raise ValueError("The requested particle count must be positive")
     if n_accepted is not None and scheduler is None:
         raise ValueError("Acceptance sampling requires a scheduler")
+    if epsilon is not None and np.isnan(epsilon):
+        raise ValueError("epsilon must not be NaN")
 
     # Calculate the deadline and remaining simulation budget
     deadline = start_time + max_time if max_time is not None else None
@@ -251,6 +253,8 @@ def evaluate_particle(
 
     # Compute distance
     distance = distance_function(observed_data, simulation)
+    if np.isnan(distance):
+        raise ValueError("Simulation distance must not be NaN")
 
     # Check acceptance against the distance threshold
     accepted = epsilon is None or (
