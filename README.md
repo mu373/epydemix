@@ -72,6 +72,33 @@ df_quantiles = results.get_quantiles_compartments()
 plot_quantiles(df_quantiles, columns=["I_total", "S_total", "R_total"])
 ```
 
+### Parallel simulations
+
+Set `n_workers` to run simulations in separate processes. Using the model above:
+
+```python
+results = model.run_simulations(
+    start_date="2024-01-01",
+    end_date="2024-04-10",
+    Nsim=100,
+    rng=43,
+    n_workers=2,
+)
+```
+
+**Worker counts**
+
+These `n_workers` settings apply to simulations, projections, and top-fraction calibration:
+
+| `n_workers` | Execution |
+| --- | --- |
+| `None` (default) | Sequential, in the calling process |
+| Positive integer | That many worker processes |
+| `-1` | One worker per available CPU |
+| `-2` | One fewer worker than available CPUs |
+| `-6` | Five fewer workers than available CPUs |
+
+
 ### Tutorials
 We provide a series of tutorials to help you get started with **epydemix**.
 

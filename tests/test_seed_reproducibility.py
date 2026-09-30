@@ -100,11 +100,7 @@ def test_run_simulations_is_seed_reproducible():
 
 
 def test_run_simulations_trajectories_differ_across_nsim():
-    """The ``Nsim`` trajectories share one Generator advanced sequentially.
-
-    Because the single rng keeps advancing between simulations, the individual
-    trajectories within one ``run_simulations`` call must not be identical to each other.
-    """
+    """Independent trial streams produce distinct trajectories within an ensemble."""
     key = "Susceptible_to_Infected_total"
     model = _make_sir_model()
     results = model.run_simulations(
@@ -124,9 +120,7 @@ def test_run_simulations_trajectories_differ_across_nsim():
 def test_run_simulations_prefix_is_stable_across_nsim():
     """A larger ``Nsim`` run reproduces the smaller run's trajectories as a prefix.
 
-    The trajectories are consecutive slices of one sequentially-advanced Generator, so
-    with the same seed the first ``n`` trajectories of an ``Nsim=n+k`` run must match an
-    ``Nsim=n`` run exactly; the larger run only appends more.
+    Trial streams depend on their indices, so increasing Nsim only appends results.
     """
     key = "Susceptible_to_Infected_total"
 
@@ -151,7 +145,7 @@ def test_run_simulations_accepts_integer_seed():
     """The public API accepts an int seed, not just a Generator, and normalizes it.
 
     Passing ``rng=0`` must behave identically to ``rng=np.random.default_rng(0)``; the
-    int is normalized once at the entry point and threaded down as a Generator.
+    int is normalized once before deriving independent trial streams.
     """
     key = "Susceptible_to_Infected_total"
 

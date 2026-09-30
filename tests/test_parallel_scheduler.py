@@ -1,8 +1,75 @@
-"""Sequential acceptance limits and candidate consumption."""
+"""Scheduler queue bounds, ordering, partial results, and failure cleanup."""
 
+from concurrent.futures import Future, ProcessPoolExecutor
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
-from epydemix.calibration._scheduler import SequentialScheduler
+import pytest
+
+from epydemix._execution import map_tasks
+from epydemix.calibration._scheduler import (
+    SequentialScheduler,
+)
+
+
+def test_batch_bounds_lazy_input_and_preserves_order():
+    """Check lazy inputs stay within the queue bound and results keep input order."""
+    consumed = 0
+    retrieved = 0
+
+    def arguments():
+        nonlocal consumed
+        for index in range(25):
+            consumed += 1
+            assert consumed - retrieved <= 4
+            yield (index,)
+
+    def submit(fn, index):
+        future = Future()
+        future.set_result(fn(index))
+        original_result = future.result
+
+        def result():
+            nonlocal retrieved
+            retrieved += 1
+            return original_result()
+
+        future.result = result
+        return future
+
+    # Completed futures make the queue bound deterministic, with no timing sleeps.
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        with patch.object(executor, "submit", side_effect=submit):
+            assert map_tasks(executor, str, arguments()) == [str(i) for i in range(25)]
+    assert consumed == retrieved == 25
+
+
+@pytest.mark.parametrize("failure", ["worker", "input"])
+def test_batch_cancels_pending_work_on_failure(failure):
+    """Check pending tasks are cancelled after worker or input-iterator failure."""
+    submitted = []
+
+    def arguments():
+        for index in range(20):
+            if failure == "input" and index == 2:
+                raise RuntimeError("bad input")
+            yield (index,)
+
+    def submit(*args):
+        future = Future()
+        if failure == "worker" and not submitted:
+            future.set_exception(RuntimeError("bad worker"))
+        submitted.append(future)
+        return future
+
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        with patch.object(executor, "submit", side_effect=submit):
+            with pytest.raises(RuntimeError, match="bad " + failure):
+                map_tasks(executor, str, arguments())
+    assert len(submitted) == (4 if failure == "worker" else 2)
+    assert all(
+        future.cancelled() for future in submitted[1 if failure == "worker" else 0 :]
+    )
 
 
 def test_sequential_cutoffs_do_not_consume_extra_candidates():
