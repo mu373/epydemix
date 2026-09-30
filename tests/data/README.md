@@ -27,3 +27,21 @@ consumes one four-word root seed and derives candidate streams by index, changin
 particle values, weights, distances, trajectories, projections and parent RNG state.
 
 To regenerate the active snapshot, run the recipe above using this source commit.
+
+## Simulation ensemble reference
+
+`simulation_reference_baseline.json` is the immutable pre-integration output from
+`f2264e6`. The baseline test passed before implementation, then failed after the
+independent trial-stream change. `simulation_reference.json` records the new
+explicitly regenerated trajectories and parent RNG state; dates, indices and
+parameter definitions retain their meaning. The model and generator are documented
+in `tests/fixtures/simulation_reference.py`.
+
+```sh
+python -m tests.fixtures.simulation_reference --source-commit HEAD --output tests/data/simulation_reference.json
+```
+
+Generate only when an intentional simulation/RNG contract change requires it,
+record the old test's failure first, and retain the original fixture. The pinned
+CI job runs both calibration and simulation references; other environments use
+the structural and same-environment reproducibility tests.
