@@ -11,7 +11,7 @@ from scipy import stats
 from threadpoolctl import threadpool_info, threadpool_limits
 
 from epydemix import _execution
-from epydemix.calibration import _evaluate
+from epydemix.calibration import _evaluate, _scheduler
 from epydemix.calibration.abc import ABCSampler
 
 
@@ -87,7 +87,9 @@ def test_unreadable_limits_fail_conservatively(monkeypatch):
         assert _execution._get_available_cpu_count() == 1
 
 
-@pytest.mark.parametrize("strategy", ["top_fraction", "projections"])
+@pytest.mark.parametrize(
+    "strategy", ["smc", "rejection", "top_fraction", "projections"]
+)
 @pytest.mark.parametrize("external", [False, True])
 def test_oversized_pool_rejected_before_rng_or_submission(
     monkeypatch, strategy, external
@@ -282,3 +284,75 @@ def test_parallel_dispatch_does_not_limit_parent_threads(monkeypatch):
             pool, _evaluate.simulate_projection, [(_native_simulate, {})]
         )
     assert len(result) == 1
+
+
+def _count_worker_scopes(record_file):
+    """Initializer retains a non-default limit and records scope setup in a worker."""
+    _set_two_threads()
+    original = _execution.threadpool_limits
+
+    def limits(*args, **kwargs):
+        with Path(record_file).open("a") as record:
+            record.write("scope\n")
+        return original(*args, **kwargs)
+
+    _execution.threadpool_limits = limits
+
+
+def test_dyn_worker_discovers_native_libraries_once_and_restores(tmp_path):
+    """12 accepted candidates need one worker-loop scope, not 12 discoveries.
+
+    Use a caller-owned spawn pool with initializer setting two native threads. The
+    model and distance require one; after the loop the same worker must still have
+    two and remain usable. Counting setup calls avoids a machine-speed assertion.
+    """
+    record = tmp_path / "scopes"
+    sampler = ABCSampler(
+        _native_simulate,
+        {"beta": stats.uniform()},
+        {},
+        np.zeros(1),
+        _native_distance,
+        rng=43,
+    )
+    with ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=get_context("spawn"),
+        initializer=_count_worker_scopes,
+        initargs=(str(record),),
+    ) as pool:
+        result = sampler.calibrate(
+            strategy="rejection",
+            num_particles=12,
+            epsilon=1,
+            executor=pool,
+            verbose=False,
+        )
+        assert len(result.get_posterior_distribution()) == 12
+        assert set(pool.submit(_thread_counts).result()) == {2}
+    assert record.read_text().splitlines() == ["scope"]
+
+
+def test_dyn_restores_first_job_before_entering_native_scope(monkeypatch):
+    """Deserializing a custom simulator may load a new native library.
+
+    Observe restoration order deterministically: the first load is outside the scope;
+    two further candidates restore fresh inputs inside the already-configured scope.
+    No global controller cache can miss libraries imported by that first restoration.
+    """
+    import pickle
+
+    active_at_load = []
+    original = _scheduler.pickle.loads
+
+    def load(data):
+        active_at_load.append(getattr(_execution._thread_limit_scope, "active", False))
+        return original(data)
+
+    monkeypatch.setattr(_scheduler.pickle, "loads", load)
+    args = [(_native_simulate, {}, [], [], None, _native_distance)] * 3
+    job = pickle.dumps((_evaluate.evaluate_particle, args))
+    state = _scheduler._SchedulerState(3, None, None)
+    accepted = _scheduler._evaluate_in_worker(job, state)
+    assert len(accepted) == 3
+    assert active_at_load == [False, True, True]

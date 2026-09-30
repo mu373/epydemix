@@ -19,8 +19,8 @@ def run_particle_evaluations(
     n_accepted=None,
     n_evaluations=None,
     epsilon=None,
-    scheduler=None,
     pool=None,
+    scheduler=None,
     start_time=None,
     max_time=None,
     total_simulations_budget=None,
@@ -34,9 +34,8 @@ def run_particle_evaluations(
     """Prepare candidates and run their evaluations for an ABC method.
 
     Set exactly one of n_accepted (SMC/rejection) or n_evaluations (top fraction).
-    Acceptance targets use the supplied SequentialScheduler; fixed counts evaluate
-    each candidate.
-    A time or simulation budget can stop either early.
+    Acceptance targets use the supplied SequentialScheduler or DynamicScheduler;
+    fixed counts use map_tasks. A time or simulation budget can stop either early.
 
     inputs contains (simulation_function, parameters, param_names, observed_data,
     distance_function). Previous particles, weights, and perturbations configure
@@ -45,8 +44,8 @@ def run_particle_evaluations(
 
     Return accepted_results in candidate order and this call's n_simulations.
     With epsilon=None, all evaluated candidates are retained for later selection.
-    progress(completed, accepted) reports each sequential evaluation
-    or the completed fixed-count batch.
+    progress(completed, accepted) reports each sequential evaluation, parallel
+    scheduler updates, or the completed fixed-count batch.
     """
     # Select a stopping condition before advancing the RNG or running simulations
     if (n_accepted is None) == (n_evaluations is None):
@@ -107,7 +106,7 @@ def run_particle_evaluations(
         accepted = [result for result in results if result["accepted"]]
         return {"accepted_results": accepted, "n_simulations": len(results)}
 
-    # Evaluate until enough candidates are accepted or a limit is reached
+    # Run the selected acceptance scheduler
     return scheduler.run_until_n_accepted(
         evaluate,
         arguments,
@@ -118,14 +117,30 @@ def run_particle_evaluations(
     )
 
 
+class EvaluationArguments:
+    """Attach uncached model inputs while preserving random candidate access."""
+
+    def __init__(self, inputs, candidates):
+        self.inputs = inputs
+        self.candidates = candidates
+
+    def __getitem__(self, index):
+        params, epsilon, rng = self.candidates[index]
+        function, parameters, names, observed, distance = self.inputs
+        return function, parameters, names, params, observed, distance, epsilon, rng
+
+    def __iter__(self):
+        """Attach inputs without swallowing IndexError from user callbacks."""
+        function, parameters, names, observed, distance = self.inputs
+        for params, epsilon, rng in self.candidates:
+            yield function, parameters, names, params, observed, distance, epsilon, rng
+
+
 def build_particle_tasks(executor, inputs, candidates, *, inclusive=False):
-    """Attach fixed model inputs to each candidate for evaluation."""
-    function, parameters, names, observed, distance = inputs
-    arguments = (
-        (function, parameters, names, params, observed, distance, epsilon, rng)
-        for params, epsilon, rng in candidates
+    """Attach fixed model inputs to independently addressable candidate arguments."""
+    return partial(evaluate_particle, inclusive=inclusive), EvaluationArguments(
+        inputs, candidates
     )
-    return partial(evaluate_particle, inclusive=inclusive), arguments
 
 
 @single_threaded

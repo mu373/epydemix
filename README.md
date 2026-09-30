@@ -72,6 +72,27 @@ df_quantiles = results.get_quantiles_compartments()
 plot_quantiles(df_quantiles, columns=["I_total", "S_total", "R_total"])
 ```
 
+### Parallel calibration and projections
+
+Use `n_workers` on an `ABCSampler` to evaluate candidates in separate processes:
+
+```python
+results = sampler.calibrate(
+    strategy="smc", num_particles=100, num_generations=3, n_workers=2,
+    parallel_strategy="dynamic",
+)
+```
+
+`None` runs sequentially; positive integers select a process count. Negative values
+use `max(1, available_cpus + 1 + n_workers)` (`-1` uses available CPUs). Caller-owned
+`ProcessPoolExecutor` instances can be passed as `executor` and remain open.
+The same worker settings apply to rejection, top-fraction and projections.
+Top-fraction and projections have fixed counts and do not take `parallel_strategy`.
+
+Candidate IDs determine RNG streams and retained order. DYN drains in-flight work
+and counts surplus evaluations toward the simulation budget. A binding budget or
+time cutoff can change later generations across worker counts.
+
 ### Tutorials
 We provide a series of tutorials to help you get started with **epydemix**.
 
