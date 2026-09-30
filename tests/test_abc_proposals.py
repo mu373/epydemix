@@ -1,4 +1,4 @@
-"""Proposal contracts before indexed candidate RNGs and process scheduling.
+"""Proposal contracts for indexed RNGs and process scheduling.
 
 Support retries belong to proposal generation, not simulation accounting. These
 tests use a Uniform(0,1) prior and deterministic kernels to isolate that boundary.
@@ -72,10 +72,10 @@ def test_support_retry_respects_deadline(monkeypatch):
             return -1
 
     monkeypatch.setattr(_proposals, "datetime", Clock)
-    candidates = _proposals.generate_candidates(
+    candidates = _proposals.ProposalSequence(
         {"theta": stats.uniform()},
         ["theta"],
-        np.random.default_rng(43),
+        43,
         True,
         particles=np.array([[0.25]]),
         weights=np.array([1.0]),
@@ -94,14 +94,14 @@ def test_zero_weight_parents_are_never_selected(weights, expected):
         def propose(self, parent, rng):
             return parent
 
-    candidates = _proposals.generate_candidates(
+    candidates = _proposals.ProposalSequence(
         {"theta": stats.uniform()},
         ["theta"],
-        np.random.default_rng(43),
+        43,
         True,
         particles=np.array([[0.25], [0.5], [0.75]]),
         weights=np.array(weights),
         perturbations={"theta": IdentityKernel()},
     )
     for _ in range(10):
-        assert next(candidates)[0] == [expected]
+        assert candidates[_][0] == [expected]
