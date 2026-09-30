@@ -130,8 +130,6 @@ class DynamicScheduler:
             "stop_reason": reason,
         }
 
-from .._execution import single_threaded
-
 
 class SequentialScheduler:
     """Evaluate one candidate at a time until the acceptance target or a limit."""
