@@ -75,6 +75,9 @@ def test_dynamic_drains_surplus_and_keeps_earliest_candidate():
                 synchronized_accept, args, 1
             )
     assert result["n_simulations"] == 2
+    assert result["n_matched"] == 2
+    assert result["n_drained"] == 1
+    assert result["stop_reason"] == "target"
     assert result["accepted_results"] == [{"accepted": True, "params": [0]}]
 
 
@@ -118,7 +121,13 @@ def test_explicit_physical_budget_and_expired_deadline():
             10,
             deadline=datetime.now() - timedelta(seconds=1),
         )
-        assert result == {"accepted_results": [], "n_simulations": 0}
+        assert result == {
+            "accepted_results": [],
+            "n_simulations": 0,
+            "n_matched": 0,
+            "n_drained": 0,
+            "stop_reason": "deadline",
+        }
 
 
 def test_indexed_candidates_preserve_previous_spawn_streams():
