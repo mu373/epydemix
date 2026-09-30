@@ -16,6 +16,7 @@ import platform
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from datetime import date, timedelta
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -30,6 +31,7 @@ import psutil
 import scipy
 from scipy import stats
 
+from epydemix._execution import _get_available_cpu_count
 from epydemix._logging import JSONFormatter, _json_values
 from epydemix.calibration.abc import ABCSampler
 from epydemix.model import simulate
@@ -59,17 +61,20 @@ def make_sampler(model, payload_mib, seed):
         )
     epidemic = create_sir(transmission_rate=0.3, recovery_rate=0.1)
     population = Population()
-    population.add_population([10000])
-    population.add_contact_matrix(np.array([[1.0]]))
+    groups, days = (16, 181) if model == "sir_large" else (1, 10)
+    population.add_population([10000] * groups)
+    contacts = np.full((groups, groups), 0.2)
+    np.fill_diagonal(contacts, 1.0)
+    population.add_contact_matrix(contacts)
     epidemic.set_population(population)
     fixed = dict(
         epimodel=epidemic,
         start_date="2023-01-01",
-        end_date="2023-01-10",
+        end_date=str(date(2023, 1, 1) + timedelta(days=days - 1)),
         initial_conditions_dict={
-            "Susceptible": np.array([9900]),
-            "Infected": np.array([100]),
-            "Recovered": np.array([0]),
+            "Susceptible": np.full(groups, 9900),
+            "Infected": np.full(groups, 100),
+            "Recovered": np.zeros(groups, dtype=int),
         },
     )
     observed = sir_simulation(dict(fixed, rng=np.random.default_rng(0)))["data"]
@@ -164,12 +169,19 @@ def install_dispatch_profile(directory):
     from concurrent.futures.process import _CallItem
     from multiprocessing.reduction import ForkingPickler
 
-    from epydemix.calibration import _worker_inputs
+    from epydemix.calibration import _scheduler, _worker_inputs
 
-    report = {"tasks": [], "serialization": []}
+    report = {"tasks": [], "serialization": [], "manager_start": []}
     submit, dumps = ProcessPoolExecutor.submit, ForkingPickler.dumps
     initialize = ProcessPoolExecutor.__init__
     save_inputs = _worker_inputs.save_worker_inputs
+    manager_start = _scheduler._SchedulerManager.start
+
+    def measured_manager_start(manager, *args, **kwargs):
+        started = perf_counter()
+        result = manager_start(manager, *args, **kwargs)
+        report["manager_start"].append({"started": started, "finished": perf_counter()})
+        return result
 
     def measured_save_inputs(path, inputs):
         started = perf_counter()
@@ -237,6 +249,7 @@ def install_dispatch_profile(directory):
     ProcessPoolExecutor.submit = measured_submit
     ProcessPoolExecutor.__init__ = measured_initialize
     _worker_inputs.save_worker_inputs = measured_save_inputs
+    _scheduler._SchedulerManager.start = measured_manager_start
     ForkingPickler.dumps = staticmethod(measured_dumps)
     return report
 
@@ -414,6 +427,16 @@ def child(args):
                         "scipy": scipy.__version__,
                         "platform": platform.platform(),
                         "cpu_count": os.cpu_count(),
+                        "available_cpu_count": _get_available_cpu_count(),
+                        "processor": platform.processor(),
+                        "native_thread_environment": {
+                            name: os.environ.get(name)
+                            for name in (
+                                "OPENBLAS_NUM_THREADS",
+                                "OMP_NUM_THREADS",
+                                "MKL_NUM_THREADS",
+                            )
+                        },
                     },
                 }
             ),
@@ -509,7 +532,9 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", choices=["normal", "sir"], default="normal")
+    parser.add_argument(
+        "--model", choices=["normal", "sir", "sir_large"], default="normal"
+    )
     parser.add_argument(
         "--strategy", choices=["smc", "rejection", "top_fraction"], default="smc"
     )
