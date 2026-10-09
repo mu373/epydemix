@@ -430,3 +430,22 @@ def test_calibration_quantiles_skips_non_numeric_with_ignore_nan(mock_data_with_
     assert "S" in quantiles_df.columns
     assert "I" in quantiles_df.columns
     assert "dates" not in quantiles_df.columns
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+@pytest.mark.parametrize("ignore_nan", [False, True])
+def test_get_calibration_quantiles_matches_per_level(dtype, ignore_nan):
+    """All-levels-at-once values and row order match one np.quantile call per level."""
+    rng = np.random.default_rng(0)
+    values = rng.normal(100, 15, (20, 6)).astype(dtype)
+    values[rng.random(values.shape) < 0.1] = np.nan
+    calib_results = CalibrationResults()
+    calib_results.selected_trajectories[0] = [{"S": v} for v in values]
+    levels = [0.9, 0.1, 0.5, 0.5]  # unsorted and repeated
+
+    df = calib_results.get_calibration_quantiles(quantiles=levels, ignore_nan=ignore_nan)
+
+    func = np.nanquantile if ignore_nan else np.quantile
+    expected = [x for q in levels for x in func(values, q, axis=0)]
+    np.testing.assert_array_equal(df["S"].to_numpy(), np.array(expected))
+    assert df["quantile"].tolist() == [q for q in levels for _ in range(6)]
