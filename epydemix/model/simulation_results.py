@@ -123,11 +123,18 @@ class SimulationResults:
                     )
 
         for comp_name, comp_data in stacked.items():
-            comp_quantiles = []
-            for q in quantiles:
-                quant_values = quantile_func(comp_data, q, axis=0)
-                comp_quantiles.extend(quant_values)
-            data[comp_name] = comp_quantiles
+            if comp_data.dtype.kind == "f" and comp_data.dtype.itemsize < 8:
+                # NumPy rounds scalar and array q differently for float16/float32
+                data[comp_name] = [
+                    val
+                    for q in quantiles
+                    for val in quantile_func(comp_data, q, axis=0)
+                ]
+            else:
+                # One call for all levels; (levels, dates) flattened level-major
+                data[comp_name] = list(
+                    quantile_func(comp_data, quantiles, axis=0).reshape(-1)
+                )
 
         return pd.DataFrame(data)
 

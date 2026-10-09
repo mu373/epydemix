@@ -360,3 +360,23 @@ def test_get_quantiles_compartments_variables_with_ignore_nan(
     )
     assert "I" in df.columns
     assert "S" not in df.columns
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+@pytest.mark.parametrize("ignore_nan", [False, True])
+def test_get_quantiles_matches_per_level(mock_trajectory_data_no_nan, dtype, ignore_nan):
+    """All-levels-at-once values and row order match one np.quantile call per level."""
+    sim_results = SimulationResults(
+        trajectories=mock_trajectory_data_no_nan, parameters={}
+    )
+    rng = np.random.default_rng(0)
+    values = rng.normal(100, 15, (20, 10)).astype(dtype)
+    values[rng.random(values.shape) < 0.1] = np.nan
+    levels = [0.9, 0.1, 0.5, 0.5]  # unsorted and repeated
+
+    df = sim_results.get_quantiles({"S": values}, quantiles=levels, ignore_nan=ignore_nan)
+
+    func = np.nanquantile if ignore_nan else np.quantile
+    expected = [x for q in levels for x in func(values, q, axis=0)]
+    np.testing.assert_array_equal(df["S"].to_numpy(), np.array(expected))
+    assert df["quantile"].tolist() == [q for q in levels for _ in range(10)]

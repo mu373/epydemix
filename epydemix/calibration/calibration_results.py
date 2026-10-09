@@ -223,8 +223,13 @@ class CalibrationResults:
         for key, vals in trajectories.items():
             if not np.issubdtype(vals.dtype, np.number):
                 continue
-            data[key] = [
-                val for q in quantiles for val in quantile_func(vals, q, axis=0)
-            ]
+            if vals.dtype.kind == "f" and vals.dtype.itemsize < 8:
+                # NumPy rounds scalar and array q differently for float16/float32
+                data[key] = [
+                    val for q in quantiles for val in quantile_func(vals, q, axis=0)
+                ]
+            else:
+                # One call for all levels; (levels, dates) flattened level-major
+                data[key] = list(quantile_func(vals, quantiles, axis=0).reshape(-1))
 
         return pd.DataFrame(data)
